@@ -35,9 +35,10 @@ THE SOFTWARE.
 #define FAUXMO_RX_TIMEOUT           3
 
 
-// #define MY_DEBUG_FAUXMO         
-// #define DEBUG_FAUXMO                Serial
-// #define DEBUG_FAUXMO_VERBOSE_TCP    true
+#define DEBUG_FAUXMO_TCP         
+//#define MY_DEBUG_FAUXMO         
+//#define DEBUG_FAUXMO                Serial
+//#define DEBUG_FAUXMO_VERBOSE_TCP    true
 // #define DEBUG_FAUXMO_VERBOSE_UDP    true
 
 
@@ -78,7 +79,11 @@ THE SOFTWARE.
 #include <vector>
 #include "templates.h"
 
+#ifdef DEBUG_FAUXMO_TCP         
+typedef std::function<void(unsigned char, const char *, char, unsigned char, const char *, const char *)> TSetStateCallback;
+#else
 typedef std::function<void(unsigned char, const char *, char, unsigned char)> TSetStateCallback;
+#endif
 
 typedef struct {
     char * name;

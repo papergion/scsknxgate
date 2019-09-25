@@ -1,15 +1,28 @@
-#define _FW_NAME     "SCSKNXGATE"
-#define _FW_VERSION  "VER_4.1b"
-
-#define _ESP_CORE    "esp8266-2.5.2"  //  flash 35%   ram 43%
 //
-//  usare flash_size 1M(no spifs)
+//-----------------------work in progress: riadattamento a knx <----------------
+//---------------------------------------: riverifica su scs   <----------------
+//
+// i comandi dimmer alza e abbassa mandano i cmd seriali ma che non fanno niente (errore gate)
+//           {A7}{6D}{33}{31}
+// dopo tanti abbassa il dimmer va in off - quando si alza alexa manda ON e BRI ma BRI viene perso
+//      per UART occupata...
+//           {A7}{79}{01}{0B}{33}{81}
+//           UART in use...
+//----------------------------------------------------------------------------------
+#define _FW_NAME     "SCSKNXGATE"
+#define _FW_VERSION  "VER_4.346"
+#define _ESP_CORE    "esp8266-2.5.2"  //  flash 36%   ram 43%
+//----------------------------------------------------------------------------------
 //
 //               ---- attenzione - porta http: 8080 <--se alexaParam=y------------------------
-//
-//#define KNX - al momento solo SCS
-#define SCS
+
+#define KNX
+//#define SCS
 //#define DEBUG
+
+//#define NO_ALEXA_MQTT
+#define USE_TCPSERVER
+#define TCP_PORT 5045
 
 #define USE_OTA
 //#define COMMIT_RARE
@@ -17,6 +30,7 @@
 /*
   scsknxgate - gateway between KNXgate/SCSgate and ethernet application   UDP / HTTP / MQTT
 
+  V 4.2 - use TCP for download and update device tab
   V 4.1 - use OTA for wifi firmware update
   V 4.0 - use fauxmo for direct connection with echo dot devices
   V 3.7 - homeassistant mode parametrico - scrittura UART diretta senza TX queue
@@ -86,6 +100,11 @@ extern "C" {
 #include "user_interface.h"
 }
 
+#ifdef USE_TCPSERVER
+  WiFiServer tcpserver(5045);
+  WiFiClient tcpclient;
+#endif
+
 // =======================================================================================================================
   typedef union _WORD_VAL
   {
@@ -105,11 +124,13 @@ unsigned int http_port = 80;
 #ifdef KNX
 #define _MODO "KNX"
 #define _modo "knx"
+#define ID_MY "interfaccia konnex"
 #endif
 
 #ifdef SCS
 #define _MODO "SCS"
 #define _modo "scs"
+#define ID_MY "interfaccia scs"
 #endif
 // =======================================================================================================================
 
@@ -169,7 +190,7 @@ unsigned int http_port = 80;
 // =======================================================================================================================
 #include "fauxmoESP.h"
 fauxmoESP fauxmo;
-unsigned char id_interfaccia_scs = 0;
+unsigned char id_interfaccia_scs_knx = 0;
 unsigned char id_fauxmo = 0;
 unsigned char ArduinoOTAflag = 0;
 #ifdef BLINKLED
@@ -232,10 +253,6 @@ void setupAP(void);
 void launchWeb(int webtype);
 void createWebServer(int webtype);
 
-//void immediateSend(void);
-//char immediateReceive(char firstChar);
-//void manualInput(char prefix);
-
 const char* ssid = "ESP_" _MODO "GATE";
 const char* passphrase = _modo "gate1";
 
@@ -253,12 +270,22 @@ String content;
 
 char   httpCallback[128];
 int    statusCode;
-char   udpopen;
+char   udpopen = 0;
+char   tcpopen = 0;
+char   tcpuart = 0;     // 0=ritorno seriale su UDP   1=ritorno seriale su TCP    2=debug messg su TCP
 String httpResp = "";   // resp= nessuna risposta      resp=i conferma immediata       resp=a risposta "get" con caratteri SCSGATE      resp=y  entrambe
 
 char udpBuffer[255];
 char requestBuffer[36];
 unsigned char requestLen = 0;
+char asynchBuffer[16];
+unsigned char asynchLen = 0;
+
+char serObuffer[2,16];
+char serOlen[2] = {0,0};
+char bufSemaphor = -1;
+
+
 char replyBuffer[255];
 unsigned char replyLen;
 unsigned char firstTime = 0;
@@ -296,10 +323,11 @@ WiFiUDP udpConnection;
 //                               E_MQTT_TABDEVICES [indirizzo] contiene devtype
 //                                                                      1 = "switch"
 //                                                                      3 = "dimmer"
+//                                                                      4 = "dimmer knx"
 //                                                                      8 = "cover"
 //                                                                      9 = "coverpct"
 
-char alexa_scs_id[168];
+char alexa_BUS_id[168]; // pointer: id alexa   -   contenuto: device address reale (scs o knx)
 
 #define E_ALEXA_DESC_DEVICE 560 // device description max 168 x E_ALEXA_DESC_LEN char 
 #define E_ALEXA_DESC_LEN     20 // device description max length - top 
@@ -421,7 +449,7 @@ void setupAP(void)
 #endif
   udpopen = udpConnection.begin(udpLocalPort);
 #ifdef DEBUG
-  if (udpopen)
+  if (udpopen == 1)
     Serial.println ( "UDP server started" );
   else
     Serial.println ( "UDP open ERROR" );
@@ -757,13 +785,15 @@ void handleMqttCFG()
   if (log[0] == 'Y') log[0] = 'y';
   if (pers[0] == 'Y') pers[0] = 'y';
   if (alex[0] == 'Y') alex[0] = 'y';
-
+  
+#ifdef NO_ALEXA_MQTT
   if ((broker.length() > 0) && (alex[0] == 'y'))
   {
     content = "{\"ERROR\":\"ALEXA option invalid in MQTT mode\"}";
     statusCode = 300;
   }
   else
+#endif
   {
     broker.toCharArray(mqtt_server, sizeof(mqtt_server));
     port.toCharArray(mqtt_port, sizeof(mqtt_port));
@@ -838,6 +868,7 @@ void handleMqttDevices()  // inizio processo di censimento automatico dei device
         content += ", \"mqtt\":\"CLOSED\"}";
 
       statusCode = 200;
+      setFirst();  // DEVONO essere attivi @MX  e @l
       requestBuffer[requestLen++] = '§';
       requestBuffer[requestLen++] = DEVICEREQUEST;
       requestBuffer[requestLen++] = 0xFF;
@@ -860,7 +891,7 @@ void handleMqttDevices()  // inizio processo di censimento automatico dei device
       devCtr = 0;
       requestBuffer[requestLen++] = '§';
       requestBuffer[requestLen++] = 'U';
-      requestBuffer[requestLen++] = '2';
+      requestBuffer[requestLen++] = '2'; // fine censimento
       immediateSend();
       delay(400);       // wait 400mS due to pic eeprom write
 
@@ -904,9 +935,6 @@ void handleMqttDevices()  // inizio processo di censimento automatico dei device
       immediateSend();
       delay(200); // wait 100mS due to eeprom write
     }
-
-
-
     else if (request == "resend")
     {
       if (mqttopen == 3)
@@ -937,7 +965,12 @@ void handleMqttDevices()  // inizio processo di censimento automatico dei device
             content += nomeDevice;
             if (devtype == 1)
               content += "switch";
+#ifdef SCS
             else if (devtype == 3)
+#endif
+#ifdef KNX
+            else if (devtype == 4)
+#endif
               content += "dimmer";
             else if (devtype == 8)
               content += "cover";
@@ -958,7 +991,6 @@ void handleMqttDevices()  // inizio processo di censimento automatico dei device
     }
 
 
-
     else
     { // query
       if (devIx == 0)
@@ -970,7 +1002,7 @@ void handleMqttDevices()  // inizio processo di censimento automatico dei device
         char device;
         char devtype;
         char nomeDevice[6];
-        char sectorline = EEPROM.read(E_MQTT_TABDEVICES);
+//        char sectorline = EEPROM.read(E_MQTT_TABDEVICES);
 
         for (char devx = 1; devx < 168; devx++)
         {
@@ -978,19 +1010,21 @@ void handleMqttDevices()  // inizio processo di censimento automatico dei device
           if ((devtype > 0) && (devtype < 32))
           {
 #ifdef SCS
-            sprintf(nomeDevice, "%02X  ", devx);  // to
+            sprintf(nomeDevice, "%02X ", devx);  // to
 #endif
 #ifdef KNX
-            device = devx;
-            device <<= 1; // formato originale 8 bit
-            device--;    // indirizzo dispari
-            sprintf(nomeDevice, "%02X%02X  ", sectorline, device);  // to
+            device = DeviceOfIx(devx, (char *) nomeDevice);
 #endif
             content += "<li>";
             content += nomeDevice;
             if (devtype == 1)
               content += "switch";
+#ifdef SCS
             else if (devtype == 3)
+#endif
+#ifdef KNX
+            else if (devtype == 4)
+#endif
               content += "dimmer";
             else if (devtype == 8)
               content += "cover";
@@ -1000,7 +1034,7 @@ void handleMqttDevices()  // inizio processo di censimento automatico dei device
               requestBuffer[requestLen++] = '§';
               requestBuffer[requestLen++] = 'U';
               requestBuffer[requestLen++] = '6';
-              requestBuffer[requestLen++] = devx;
+              requestBuffer[requestLen++] = device;
               immediateSend();
               char m = immediateReceive('[');
               if (m > 8)
@@ -1057,13 +1091,12 @@ void handleDeviceName()  // denominazione devices scoperti - per alexa
 {
   // denominazione manuale
   char sectorline = EEPROM.read(E_MQTT_TABDEVICES);
-  char device;
+  char device  = 0;
   char devtype = 0;
+  char deviceX = 0;
   char nomeDevice[6];
-  char hBuffer[8];
+  char hBuffer[12];
   char *ch;
-  unsigned char devAddress = 0;
-
   WORD_VAL maxp;
   
   String AlexaDescr = "";
@@ -1075,21 +1108,33 @@ void handleDeviceName()  // denominazione devices scoperti - per alexa
 
   if (firstTime == 0) setFirst();  // DEVONO essere attivi @MX  e @l
 
-  if (server.hasArg("scsid"))
+  if (server.hasArg("busid"))
   {
-    String scsid = server.arg("scsid");
-    if (scsid != "")
+    String busid = server.arg("busid");
+    if ((busid != "") 
+#ifdef SCS
+    &&  (busid.length() > 1))
+#endif
+#ifdef KNX
+    &&  (busid.length() > 3))
+#endif
     {
-      devAddress = (char)strtoul(&scsid[0], &ch, 16);
-      if ((devAddress > 0) && (devAddress < 168))
+      deviceX = ixOfDevice(&busid[0]);
+      device = DeviceOfIx(deviceX);
+      
+      if ((deviceX > 0) && (deviceX < 168))
       {
         if (server.hasArg("devname"))
         {
-          AlexaDescr = ReadStream(&AlexaDescr[0], (int) devAddress * E_ALEXA_DESC_LEN + E_ALEXA_DESC_DEVICE, E_ALEXA_DESC_LEN, 2); // tipo=0 binary array   1:ascii array   2:ascii string
-          if (AlexaDescr != server.arg("devname"))
+          String edesc = ReadStream(&edesc[0], (int)E_ALEXA_DESC_DEVICE + (deviceX * E_ALEXA_DESC_LEN), E_ALEXA_DESC_LEN, 2); // tipo=0 binary array   1:ascii array   2:ascii string
+          AlexaDescr = server.arg("devname");
+          if (AlexaDescr != edesc)
           {
-            AlexaDescr = server.arg("devname");
-            WriteEEP(AlexaDescr, (int) devAddress * E_ALEXA_DESC_LEN + E_ALEXA_DESC_DEVICE, E_ALEXA_DESC_LEN);
+            if (alexaParam == 'y' )
+            {
+              fauxmo.renameDevice(&edesc[0], &AlexaDescr[0]);
+            }
+             WriteEEP(AlexaDescr, (int) deviceX * E_ALEXA_DESC_LEN + E_ALEXA_DESC_DEVICE, E_ALEXA_DESC_LEN);
 #ifdef COMMIT_RARE
             EndMsg = "<li>UPDATED !!!  - NOT COMMITTED</li>";
 #else
@@ -1109,10 +1154,11 @@ void handleDeviceName()  // denominazione devices scoperti - per alexa
         {
           String stype = server.arg("type");
           char type = stype[0] - '0';
-          devtype = EEPROM.read(devAddress + E_MQTT_TABDEVICES);
+          devtype = EEPROM.read(deviceX + E_MQTT_TABDEVICES);
           if ((type > 0) && (type < 32) && (type != devtype))
           {
-            WriteEEP(type, devAddress + E_MQTT_TABDEVICES);
+            WriteEEP(type, deviceX + E_MQTT_TABDEVICES);
+            devtype = type;
 #ifdef COMMIT_RARE
             EndMsg = "<li>UPDATED !!!  - NOT COMMITTED</li>";
 #else
@@ -1125,14 +1171,13 @@ void handleDeviceName()  // denominazione devices scoperti - per alexa
         if (EndMsg != "")
             EEPROM.commit();
 #endif
-
         AlexaDescr = "";
         if (devtype == 9)
         {
           requestBuffer[requestLen++] = '§';
           requestBuffer[requestLen++] = 'U';
           requestBuffer[requestLen++] = '8';
-          requestBuffer[requestLen++] = devAddress; // device id
+          requestBuffer[requestLen++] = device;     // device id
           requestBuffer[requestLen++] = devtype;    // device type
           requestBuffer[requestLen++] = maxp.byte.HB;    // max position H
           requestBuffer[requestLen++] = maxp.byte.LB;    // max position L
@@ -1140,28 +1185,24 @@ void handleDeviceName()  // denominazione devices scoperti - per alexa
           devtype = 0;
           immediateReceive('k');
         } // devtype == 9
-      } // ((devAddress > 0) && (devAddress < 168))
-    } // (server.hasArg("scsid"))
-  } // (scsid != "")
+      } // ((deviceX > 0) && (devAddress < 168))
+    } // (server.hasArg("busid"))
+  } // (busid != "")
+  
+  
+  // -------------- end of update -------------------
+  
   do
   {
-    devAddress++;
-    devtype = EEPROM.read(devAddress + E_MQTT_TABDEVICES);
-  }   while (((devtype <= 0) || (devtype > 31)) && (devAddress != 168));
-
+    deviceX++;
+    devtype = EEPROM.read(deviceX + E_MQTT_TABDEVICES);
+  }   while (((devtype <= 0) || (devtype > 31)) && (deviceX != 168));
+  if (deviceX >= 168)  devtype=0;
 
   if ((devtype > 0) && (devtype < 32))
   {
-#ifdef SCS
-    sprintf(nomeDevice, "%02X", devAddress);  // to
-#endif
-#ifdef KNX
-    device = devAddress;
-    device <<= 1; // formato originale 8 bit
-    device--;    // indirizzo dispari
-    sprintf(nomeDevice, "%02X%02X", sectorline, device);  // to
-#endif
-    AlexaDescr = ReadStream(&AlexaDescr[0], (int) devAddress * E_ALEXA_DESC_LEN + E_ALEXA_DESC_DEVICE, E_ALEXA_DESC_LEN, 2); // tipo=0 binary array   1:ascii array   2:ascii string
+    device = DeviceOfIx(deviceX, nomeDevice);
+    AlexaDescr = ReadStream(&AlexaDescr[0], (int) deviceX * E_ALEXA_DESC_LEN + E_ALEXA_DESC_DEVICE, E_ALEXA_DESC_LEN, 2); // tipo=0 binary array   1:ascii array   2:ascii string
     if (devtype == 1)
       TypeDescr = "1 switch";
     else if (devtype == 2)
@@ -1169,7 +1210,7 @@ void handleDeviceName()  // denominazione devices scoperti - per alexa
     else if (devtype == 3)
       TypeDescr = "3 dimmer";
     else if (devtype == 4)
-      TypeDescr = "4 ";
+      TypeDescr = "4 dimmer";
     else if (devtype == 8)
       TypeDescr = "8 cover";
     else if (devtype == 9)
@@ -1178,26 +1219,32 @@ void handleDeviceName()  // denominazione devices scoperti - per alexa
       requestBuffer[requestLen++] = '§';
       requestBuffer[requestLen++] = 'U';
       requestBuffer[requestLen++] = '6';
-      requestBuffer[requestLen++] = devAddress;
+      requestBuffer[requestLen++] = device;
       immediateSend();
       char m = immediateReceive('[');
       //    replyBuffer[1], replyBuffer[2]  -  maxposition H-L
       if (m > 8)
       {
         int c = replyBuffer[2] | replyBuffer[1] << 8;
-        //      sprintf(hBuffer, " %d", (int) *(&replyBuffer[1]));
-        sprintf(hBuffer, " %d", c);
+        sprintf(hBuffer, "%d", c);
       }
+      else
+        sprintf(hBuffer, "nul");
     }
   }
 
   content = "<!DOCTYPE HTML>\r\n<html>Discovered device:";
   content += "<p>";
-  content += "</p><form method='get' action='devicename'>\
-     <label>SCS address: </label><input name='scsid' maxlength=2 value='";
+  content += "</p><form method='get' action='devicename'>";
+#ifdef SCS
+  content += "<label>SCS address: </label><input name='busid' maxlength=2 value='";
+#endif
+#ifdef KNX
+  content += "<label>KNX address: </label><input name='busid' maxlength=4 value='";
+#endif
   content += String(nomeDevice);
-  content += "' style='width:30px'>\
-       <label> scs type: </label><input name='type' maxlength=10 value='";
+  content += "' style='width:40px'>\
+       <label>  type: </label><input name='type' maxlength=10 value='";
   content += TypeDescr;
   content += "' style='width:80px'> ";
 
@@ -1217,7 +1264,7 @@ void handleDeviceName()  // denominazione devices scoperti - per alexa
   char sAlex[4];
   while ((idalex <= id_fauxmo) && (found == 0))
   {
-    if (alexa_scs_id[idalex] == devAddress)
+    if (alexa_BUS_id[idalex] == device)
     {
       found = 1;
       sprintf(sAlex, "%d", idalex);  // to
@@ -1242,7 +1289,8 @@ void handleDeviceName()  // denominazione devices scoperti - per alexa
     content += " - changes COMMITTED";
 #endif
     content += "</li>";
-    devAddress = 0;
+    device = 0;
+    deviceX = 0;
     EEPROM.commit();
   }
   content += "</form> </html>";
@@ -1302,11 +1350,8 @@ void handleSetting()
 // =============================================================================================
 void handleRoot()
 {
-  IPAddress ip = WiFi.localIP();
-  String ipStr = String(ip[0]) + '.' + String(ip[1]) + '.' + String(ip[2]) + '.' + String(ip[3]);
-  //    server.send(200, "application/json", "{\"IP\":\"" + ipStr + "\"}");
   content = "<!DOCTYPE HTML>\r\n<html>Hello from ESP_" _MODO "GATE " _FW_VERSION " at ";
-  content += ipStr;
+  content += WiFi.localIP().toString();
   content += "</html>";
   server.send(200, "text/html", content);
 }
@@ -1445,6 +1490,7 @@ void MqttCallback(char* topic, byte* payload, unsigned int length)
     reply = 1;
     dev[0] = *(topic + sizeof(SWITCH_SET) - 1);
     dev[1] = *(topic + sizeof(SWITCH_SET));
+    
 #ifdef SCS
     dev[2] = 0;
     device = (char)strtoul(dev, &ch, 16);
@@ -1458,8 +1504,6 @@ void MqttCallback(char* topic, byte* payload, unsigned int length)
     dev[3] = *(topic + sizeof(SWITCH_SET) + 2);
     dev[4] = 0;
     device = (word)strtoul(dev, &ch, 16);
-    //    device<<=1; // shift left
-    //    device++;   // indirizzo dispari
     if (payloads.substring(0, 2) == "ON")
       command = 0x81;
     else if (payloads.substring(0, 3) == "OFF")
@@ -1539,8 +1583,17 @@ void MqttCallback(char* topic, byte* payload, unsigned int length)
         //    reply = 1;  // TEST
         dev[0] = *(topic + sizeof(COVERPCT_SET) - 1);
         dev[1] = *(topic + sizeof(COVERPCT_SET));
+#ifdef SCS
         dev[2] = 0;
         device = (word)strtoul(dev, &ch, 16);
+#endif
+#ifdef KNX
+        dev[2] = *(topic + sizeof(COVERPCT_SET) + 1);
+        dev[3] = *(topic + sizeof(COVERPCT_SET) + 2);
+        dev[4] = 0;
+        device = (word)strtoul(dev, &ch, 16);
+
+#endif
 
         devtype = 9; // coverpct
 
@@ -1606,8 +1659,6 @@ void MqttCallback(char* topic, byte* payload, unsigned int length)
           dev[3] = *(topic + sizeof(COVER_SET) + 2);
           dev[4] = 0;
           device = (word)strtoul(dev, &ch, 16);
-          //    device<<=1; // shift left
-          //    device++;   // indirizzo dispari
 
           if (payloads.substring(0, 4) == "STOP")
           {
@@ -1676,7 +1727,12 @@ void MqttCallback(char* topic, byte* payload, unsigned int length)
     {
       requestBuffer[requestLen++] = '§';
       requestBuffer[requestLen++] = 'u';
+#ifdef SCS
       requestBuffer[requestLen++] = device;		// to   device
+#endif
+#ifdef KNX
+      requestBuffer[requestLen++] = lowByte(device); // to   device
+#endif
       requestBuffer[requestLen++] = command;    // command (%)
     }
     else
@@ -1767,6 +1823,9 @@ void handleStatus()
 {
   char temp[38];
   content = "<!DOCTYPE HTML>\r\n<html>Hello from ESP_" _MODO "GATE " _FW_VERSION;
+  content += " at ";
+  
+  content += WiFi.localIP().toString();
   content += "<p><ol>";
 
   if (connectionType == 1) // web server AP
@@ -1777,7 +1836,6 @@ void handleStatus()
   }
   else
   {
-
     content += "<li>";
     content += "System frequency (Mhz): ";
     unsigned char frq = ESP.getCpuFreqMHz(); // returns the CPU frequency in MHz as an unsigned 8-bit integer
@@ -1793,12 +1851,12 @@ void handleStatus()
 
     content += "<li>";
     content += "Router IP: ";
-    content += String(router_ip[0]) + '.' + String(router_ip[1]) + '.' + String(router_ip[2]) + '.' + String(router_ip[3]);
+    content += WiFi.gatewayIP().toString();
     content += "</li>";
   }
 
   content += "<li>";
-  if ((udpopen) && (udpLocalPort > 0))
+  if ((udpopen == 1) && (udpLocalPort > 0))
   {
     content += "UDP hearing on port ";
     content += String(udpLocalPort);
@@ -1815,7 +1873,30 @@ void handleStatus()
   else
     content += "UDP is closed ";
   content += "</li>";
+  
+#ifdef USE_TCPSERVER
+    content += "<li>";
+    if (tcpopen)
+    {
+      content += "TCP hearing on port ";
+      content += String(TCP_PORT);
+      
+      if (tcpclient && tcpclient.connected())
+      {
+          content += " connected ip: ";
+          content += tcpclient.remoteIP().toString();
+      }
+    }
+    else
+      content += "TCP not opened ";
 
+    content += "</li>";
+#endif
+    
+  if (ArduinoOTAflag > 0)
+  {
+    content += "<li>OTA update ready</li>";  
+  }
   content += "<li>";
   content += "Http callback setup = ";
   if (httpCallback[0] == ':')
@@ -1863,12 +1944,10 @@ void handleStatus()
     else
       content += "mqtt model: GENERIC";
     content += "</li>";
-
-    content += "<li>";
   }
   if ((mqttopen > 0) || (alexaParam == 'y'))
   {
-    content += "<li>known eeprom devices: ";
+    content += "<li>known devices in eeprom: ";
     char devtype;
     char devNr = 0;
     char nomeDevice[6];
@@ -1880,32 +1959,16 @@ void handleStatus()
       if ((devtype > 0) && (devtype < 32))
       {
         devNr++;
-#ifdef SCS
-        sprintf(nomeDevice, "%02X:%02u, ", devx, devtype);  // to
-#endif
-#ifdef KNX
-        device = devx;
-        device <<= 1; // ricostruito a 8 bit
-        device--;      // base dispari
-        sprintf(nomeDevice, "%02X%02X,", sectorline, device);  // to
-#endif
+        DeviceOfIx(devx, nomeDevice);
         content += nomeDevice;
         content += " ";
       }
     }
-    //        content += "  n: ";
-    //        sprintf(nomeDevice, "%02u", devNr);  // to
-    //        content += nomeDevice;
     content += "</li>";
   }
 
   content += "<li>";
-#ifdef SCS
-  content += "ESP mode:  SCS";
-#endif
-#ifdef KNX
-  content += "ESP mode:  KNX";
-#endif
+  content += "ESP mode: " _MODO;
   content += "</li>";
 
   sprintf(temp, "<li>Free heap: %d bytes</li>", ESP.getFreeHeap());
@@ -1927,7 +1990,6 @@ void handleStatus()
   content += "</form></html>";
   server.send(200, "text/html", content);
 }
-
 // =============================================================================================
 
 
@@ -1943,6 +2005,7 @@ void createWebServer(int webtype)
     if (webtype == 0)		// server web connesso a gateway
     {
       server.on ( "/", handleRoot );
+      server.on ( "/scan", handleScan );                  // elenco reti wifi <- solo in modalita AP
     }
   server.on ("/setting", handleSetting);          // setup wifi client
   server.on ("/reset", handleReset);              // reset app
@@ -2070,12 +2133,9 @@ String ReadStream(char * stream, int eeaddress, int len, unsigned char tipo) // 
 char  MQTTnewdevice(char devtype, char sectorline, char devname)  // KNX
 {
   char edesc[25];
-  ReadStream(edesc, (int)E_ALEXA_DESC_DEVICE + (devname * E_ALEXA_DESC_LEN), E_ALEXA_DESC_LEN, 1); // tipo=0 binary array   1:ascii array   2:ascii string
-
-  devname <<= 1; // formato originale 8 bit
-  devname--;     // indirizzo dispari
   char addrdevice[5];
-  sprintf(addrdevice, "%02X%02X", sectorline, devname);
+  ReadStream(edesc, (int)E_ALEXA_DESC_DEVICE + (devname * E_ALEXA_DESC_LEN), E_ALEXA_DESC_LEN, 1); // tipo=0 binary array   1:ascii array   2:ascii string
+  DeviceOfIx(sectorline, devname, addrdevice);  
   if (mqttopen == 3)
   {
     if ((edesc[0] == 0) || (edesc[0] == 0xFF))
@@ -2091,10 +2151,10 @@ char  MQTTnewdevice(char devtype, char sectorline, char devname)  // KNX
 char  MQTTnewdevice(char devtype, char devname)   // SCS
 {
   char edesc[25];
+  char addrdevice[3];
   ReadStream(edesc, (int)E_ALEXA_DESC_DEVICE + (devname * E_ALEXA_DESC_LEN), E_ALEXA_DESC_LEN, 1); // tipo=0 binary array   1:ascii array   2:ascii string
 
-  char addrdevice[3];
-  sprintf(addrdevice, "%02X", devname);
+  DeviceOfIx(devname, addrdevice);  
   if (mqttopen == 3)
   {
     if ((edesc[0] == 0) || (edesc[0] == 0xFF))
@@ -2126,7 +2186,7 @@ char  MQTTnewdiscover(char devtype, char * addrDevice, char * nomeDevice)
     payload += addrDevice;
     payload += NEW_DEVICE_END;
   }
-  else if (devtype == 0x03) // D=define new device DIMMER <<<-----------------------------------------------
+  else if ((devtype == 0x03) || (devtype == 0x04)) // D=define new device DIMMER <<<-----------------------------------------------
   {
     rc = 1;
     topic   = NEW_LIGHT_TOPIC;
@@ -2201,33 +2261,49 @@ void immediateSend(void)
     int s = 0;
     while (s < requestLen)
     {
-      //       Serial.write(requestBuffer[s]);   // write on serial KNXgate/SCSgate
-
+      delayMicroseconds(OUTERWAIT);
+#ifndef DEBUG
       while (((USS(0) >> USTXC) & 0xff) > 0)     { // aspetta il buffer sia completamente vuoto
         delay(0);
       }
 
       delayMicroseconds(OUTERWAIT);
       USF(0) = requestBuffer[s];  // scrittura seriale
+      delayMicroseconds(OUTERWAIT);
 
       while (((USS(0) >> USTXC) & 0xff) > 0)     { // aspetta il buffer sia completamente vuoto
         delay(0);
       }
-
+#endif
+#ifdef DEBUG
+      sprintf(logCh, "%02X ", requestBuffer[s]);
+      log += logCh;
+#else
       if (mqtt_log == 'y')
       {
         sprintf(logCh, "%02X ", requestBuffer[s]);
         log += logCh;
       }
+#endif
       delayMicroseconds(OUTERWAIT);
       s++;
     }
-    if (mqtt_log == 'y')
-      WriteLog(log);
+#ifdef DEBUG
+    Serial.println("\r\n" + log);
+#else
+    if (mqtt_log == 'y') WriteLog(log);
+#endif
     requestLen = 0;
     uartSemaphor = 0;
   }
 }
+
+
+
+
+
+
+
 
 // =====================================================================================================
 // ================================LETTURA UART IMMEDIATA FUORI CICLO===================================
@@ -2256,6 +2332,17 @@ char immediateReceive(char firstChar)
           sprintf(logCh, "%02X ", replyBuffer[replyLen]);
           log += logCh;
         }
+        
+#ifdef USE_TCPSERVER
+  #ifdef DEBUG_FAUXMO_TCP         
+        if (tcpuart == 2)  
+        {
+          sprintf(logCh, "%02X ", replyBuffer[replyLen]);
+          log += logCh;
+        }
+  #endif
+#endif
+        
         if ((replyLen != 0) || (firstChar == 0) || (replyBuffer[0] == firstChar))
           replyLen++;
         delayMicroseconds(INNERWAIT);
@@ -2270,6 +2357,15 @@ char immediateReceive(char firstChar)
       }
     }
     if ((mqtt_log == 'y') && (replyLen > 0)) WriteLog(log);
+#ifdef USE_TCPSERVER
+  #ifdef DEBUG_FAUXMO_TCP         
+    if ((tcpuart == 2) && (tcpclient) && (tcpclient.connected())) 
+    {
+      tcpclient.write((char*)&log[0], log.length());
+      tcpclient.flush(); 
+    }
+  #endif
+#endif
   }
   replyBuffer[replyLen] = 0;
   return replyLen;
@@ -2309,7 +2405,7 @@ void setup() {
 
   wifi_station_set_hostname( _modo "gate" );
 
-  pinMode(LED_BUILTIN, OUTPUT);
+//  pinMode(LED_BUILTIN, OUTPUT);
   pinMode(2, INPUT);
   pinMode(0, OUTPUT);
   // aspetta 15 secondi perche' con l'assorbimento iniziale di corrente esp8266 fa disconnettere l'adattatore seriale
@@ -2488,7 +2584,7 @@ void setup() {
 #endif
   if (alexaParam == 'y')
   {
-    http_port = 8080;
+    http_port = 8080;  // 8080
   }
 
   ReadStream((char *) &mqtt_persistence, E_MQTT_PERSISTENCE, 1, 1);  // tipo=0 binary   1:ascii
@@ -2584,11 +2680,15 @@ void setup() {
 
 #ifdef DEBUG
   if (digitalRead(2) == 0)
-    Serial.println("Pin 2 force AP mode...");
+    Serial.println("Pin 2 force AP mode - ignored...");
 #endif
 
+#ifdef DEBUG
+  if (( esid.length() > 1 ) && (forceAP == 0)) // dati in eeprom, jumper ignorato, for
+#else
   if (( esid.length() > 1 ) && (digitalRead(2) == 1) && (forceAP == 0)) // dati in eeprom, jumper assente, forzatura non digitata
-  {
+#endif
+  {                                                         // connessione al router
     WiFi.begin(esid.c_str(), epass.c_str());
 
     if ((local_ip[0] > 0) && (local_ip[0] < 255))
@@ -2612,6 +2712,428 @@ void setup() {
       WiFi.mode(WIFI_STA);
       //      WiFi.disconnect();
       launchWeb(0);
+
+#ifdef DEBUG
+      Serial.println("Ready");
+      Serial.print("IP address: ");
+      Serial.println(WiFi.localIP());
+#endif
+
+      // ==================================== TCP server ====================================================
+#ifdef USE_TCPSERVER
+      tcpserver.begin();
+      tcpopen = 1;
+#endif 
+
+      // ==================================== alexa - fauxmo ================================================
+
+      if (alexaParam == 'y' )
+      {
+
+        // By default, fauxmoESP creates it's own webserver on the defined port
+        // The TCP port must be 80 for gen3 devices (default is 1901)
+        // This has to be done before the call to enable()
+
+        fauxmo.createServer(true); // not needed, this is the default value
+        fauxmo.setPort(80); // This is required for gen3 devices
+
+        // You have to call enable(true) once you have a WiFi connection
+        // You can enable or disable the library at any moment
+        // Disabling it will prevent the devices from being discovered and switched
+
+        fauxmo.enable(true);
+#ifdef DEBUG
+        Serial.println("- fauxmo enabled");
+        Serial.printf("[START] Free heap: %d bytes\r\n", ESP.getFreeHeap());
+#endif
+        // fauxmo ALEXA add devices <=============================================================================================
+
+        id_interfaccia_scs_knx = fauxmo.addDevice(ID_MY, 0);
+        
+        char devtype;
+        char devx;
+        for (devx = 1; devx < 168; devx++)
+        {
+          devtype = EEPROM.read(devx + E_MQTT_TABDEVICES);
+          if ((devtype > 0) && (devtype < 32))
+          {
+            String edesc = "";
+            edesc = ReadStream(&edesc[0], (int)E_ALEXA_DESC_DEVICE + (devx * E_ALEXA_DESC_LEN), E_ALEXA_DESC_LEN, 2); // tipo=0 binary array   1:ascii array   2:ascii string
+            
+            if (edesc != "")
+            {
+              if (devtype == 9)
+                id_fauxmo = fauxmo.addDevice(&edesc[0], 1);
+              else
+                id_fauxmo = fauxmo.addDevice(&edesc[0], 128);
+
+//            alexa_BUS_id[id_fauxmo] = devx;  // index: device id alexa max 168 devices    data: ID bus pointer
+              alexa_BUS_id[id_fauxmo] = DeviceOfIx(devx);  // index: device id alexa max 168 devices    data: ID bus reale
+            }
+          }
+        }
+        // ----------------------------------------------------------------------------------------------------
+        // ----------------------------------------------------------------------------------------------------
+        // ----------------------------------------------------------------------------------------------------
+
+
+#ifdef DEBUG
+        Serial.printf("[START] %d fauxmo devices added\r\n", id_fauxmo + 1);
+        Serial.printf("[START] Free heap: %d bytes\r\n", ESP.getFreeHeap());
+#endif
+
+
+
+
+        // fauxmo ALEXA callback <=============================================================================================
+#ifdef DEBUG_FAUXMO_TCP         
+        fauxmo.onSetState([](unsigned char alexa_id, const char * device_name, char alexacommand, unsigned char value, const char * body, const char * response)
+#else
+        fauxmo.onSetState([](unsigned char alexa_id, const char * device_name, char alexacommand, unsigned char value)
+#endif
+        { // callback start
+
+          // Callback when a command from Alexa is received.
+          // You can use alexa_id or device_name to choose the element to perform an action onto (relay, LED,...)
+          //// old // State is a bool (ON/OFF) and value a number from 0 to 255 (if you say "set kitchen light to 50%" you will receive a 128 here).
+          // command is a char (1=ON 2=OFF 3=bright equal  4=bright+   5=bright- )
+          // value is a number from 0 to 255 (if you say "set kitchen light to 50%" you will receive a 128 here).
+          // Just remember not to delay too much here, this is a callback, exit as soon as possible.
+          // If you have to do something more involved here set a flag and process it in your main loop.
+
+#ifdef DEBUG
+          Serial.printf("\r\n- Device #%d (%s) command: %d value: %d ", alexa_id, device_name, alexacommand, value);
+#endif
+
+#ifdef USE_TCPSERVER
+  #ifdef DEBUG_FAUXMO_TCP         
+          if ((tcpuart == 2) && (tcpclient) && (tcpclient.connected())) 
+          {
+            char tcpbuffer[55];
+            int  buflen;
+            sprintf(tcpbuffer,"\r\n- Device #%d (%s) command: %d value: %d       ", alexa_id, device_name, alexacommand, value);
+            tcpclient.write(tcpbuffer, 47);
+            tcpclient.write("\r\n  req: ", 9);
+            tcpclient.write(body, strlen(body));
+            tcpclient.write("\r\n  res: ", 9);
+            tcpclient.write(response, strlen(response));
+            if (uartSemaphor == 1)
+              tcpclient.write("\r\nUART in use... ", 16);
+            tcpclient.flush(); 
+          }
+  #endif
+#endif
+
+          // Checking for alexa_id is simpler if you are certain about the order they are loaded and it does not change.
+          // Otherwise comparing the device_name is safer.
+
+          //      if (strcmp(device_name, ID_MY)==0)
+          
+          if (alexa_id == id_interfaccia_scs_knx)
+          {
+#ifdef DEBUG
+            Serial.println(ID_MY);
+#endif
+            if (alexacommand == 1) // accendi <----------------
+              system_update_cpu_freq(160);
+            else if (alexacommand == 2) // spegni <----------------
+              system_update_cpu_freq(80);
+          }
+          else // an scs/knx device
+          {
+            char device = alexa_BUS_id[alexa_id];
+            char devix = ixOfDevice(device);
+            char devtype = EEPROM.read(devix + E_MQTT_TABDEVICES);
+            
+#ifdef DEBUG
+            Serial.printf("\r\n-       device " _MODO " %02X - type: %02X ", device, devtype);
+#endif
+
+            // If your device state is changed by any other means (MQTT, physical button,...)
+            // you can instruct the library to report the new state to Alexa on next request:
+            // fauxmo.setState(ID_YELLOW, true, 255);
+
+///         if (uartSemaphor == 0)
+            {
+              if (firstTime == 0) setFirst();  // DEVONO essere attivi @MX  e @l
+              unsigned char command;
+              char linesector;
+              int pct;
+              char stato = fauxmo.getState(alexa_id);
+              switch (devtype)
+              {
+                // --------------------------------------- SWITCHES -------------------------------------------
+                case 1:
+                  if (alexacommand == 1) // accendi <----------------
+                  {
+#ifdef SCS
+                    command = 0;
+#endif
+#ifdef KNX
+                    command = 0x81;
+#endif
+                    fauxmo.setState(alexa_id, stato | 1, 128);
+                  }
+                  else if (alexacommand == 2) // spegni  <----------------
+                  {
+#ifdef SCS
+                    command = 1;
+#endif
+#ifdef KNX
+                    command = 0x80;
+#endif
+                    fauxmo.setState(alexa_id, stato & 0xFE, 128);
+                  }
+                  else
+                    break;
+
+                  asynchBuffer[asynchLen++] = '§';
+                  asynchBuffer[asynchLen++] = 'y';
+
+#ifdef KNX
+// comando §y<source><linesector><destaddress><command>
+                  linesector = EEPROM.read(E_MQTT_TABDEVICES);
+                  asynchBuffer[asynchLen++] = 0x01;   // from device
+                  asynchBuffer[asynchLen++] = linesector; // to   device line-sector
+                  asynchBuffer[asynchLen++] = device; // to   device address
+#endif
+
+#ifdef SCS
+// comando §y<destaddress><source><type><command>
+                  asynchBuffer[asynchLen++] = device; // to   device
+                  asynchBuffer[asynchLen++] = 0x00;   // from device
+                  asynchBuffer[asynchLen++] = 0x12;   // type:command
+#endif
+
+                  asynchBuffer[asynchLen++] = command;// command
+                  break;
+
+
+                case 3:
+#ifdef SCS //  per ora dimmer solo SCS
+                  // --------------------------------------- LIGHTS DIMM ------------------------------------------
+                  if (alexacommand == 1) // accendi  <----------------
+                  {
+                    command = 0;
+                    fauxmo.setState(alexa_id, stato | 1, 0);
+                  }
+                  else if (alexacommand == 2) // spegni <----------------
+                  {
+                    command = 1;
+                    fauxmo.setState(alexa_id, stato & 0xFE, 0);
+                  }
+                  else if ((alexacommand == 3) || (alexacommand == 4) || (alexacommand == 5)) // cambia il valore  <----------------
+                  {
+                    fauxmo.setState(alexa_id, 1, value);
+
+                    // trasformare da % a 1D-9D <--------------------------------------------------------------
+                    pct = value;    // percentuale da 0 a 255
+                    pct *= 100;                  // da 0 a 25500
+                    pct /= 255;                  // da 0 a 100
+                    pct += 5;                    // arrotondamento
+                    pct /= 10;                   // 0-10
+                    if (pct > 9) pct = 9;
+                    if (pct == 0) pct = 1;	   // 1-9
+                    pct *= 16;                   // hex high nibble
+                    pct += 0x0D;                 // hex low  nibble
+                    command = (unsigned char) pct;
+                  }
+                  else
+                    break;
+
+                  asynchBuffer[asynchLen++] = '§';
+                  asynchBuffer[asynchLen++] = 'y';
+                  asynchBuffer[asynchLen++] = device; // to   device
+                  asynchBuffer[asynchLen++] = 0x00;   // from device
+                  asynchBuffer[asynchLen++] = 0x12;   // type:command
+                  asynchBuffer[asynchLen++] = command;// command
+
+#endif
+                  break;
+
+
+
+                case 4:
+#ifdef KNX //  dimmer  KNX
+                  // --------------------------------------- LIGHTS DIMM ------------------------------------------
+                  fauxmo.setState(alexa_id, stato, value);  // coverpct - lo stato deve sempre essere ON
+                  pct = value;
+                  pct *= 100;
+                  pct /= 255;
+
+                  if ((alexacommand == 2)  // spegni  <----------
+                  ||  (alexacommand == 1)) // accendi <----------
+                  {
+                    command = (alexacommand & 1) | 0x80;
+                    asynchBuffer[asynchLen++] = '§';
+                    asynchBuffer[asynchLen++] = 'y';
+                  // comando §y<source><linesector><destaddress><command>
+                    linesector = EEPROM.read(E_MQTT_TABDEVICES);
+                    asynchBuffer[asynchLen++] = 0x01;   // from device
+                    asynchBuffer[asynchLen++] = linesector; // to   device line-sector
+                    asynchBuffer[asynchLen++] = device; // to   device address                    
+                    asynchBuffer[asynchLen++] = command;// command
+                  }
+                  else if ((alexacommand == 4)  // alza  <----------------
+                       ||  (alexacommand == 5)) // abbassa  <----------------
+                  {
+                    asynchBuffer[asynchLen++] = '§';
+                    asynchBuffer[asynchLen++] = 'm';
+                    asynchBuffer[asynchLen++] = device;		// to   device
+                    asynchBuffer[asynchLen++] = pct;        // command (%)
+                  }
+#endif
+                  break;
+
+                case 8:
+                  // --------------------------------------- COVER ---------------------------------------------------
+                  if ((alexacommand == 2) || (alexacommand == 1)) // spegni / ferma  <--oppure accendi------
+                  {
+#ifdef SCS
+                    command = 0x0A;
+#endif
+#ifdef KNX
+                    command = 0x80;
+#endif
+                    fauxmo.setState(alexa_id, stato | 0xC1, value); // 0xc1: dara' errore ma almeno evita il blocco
+                  }
+                  else if (alexacommand == 4) // alza  <----------------
+                  {
+#ifdef SCS
+                    command = 0x08;
+#endif
+#ifdef KNX
+                    command = 0x80;
+                    device++;
+#endif
+                    fauxmo.setState(alexa_id, stato | 0xC0, value); // 0xc0: dopo aver inviato lo stato setta value a 128
+                  }
+                  else if (alexacommand == 5) // abbassa  <----------------
+                  {
+#ifdef SCS
+                    command = 0x09;
+#endif
+#ifdef KNX
+                    command = 0x81;
+                    device++;
+#endif
+                    fauxmo.setState(alexa_id, stato | 0xC0, value); // 0xc0: dopo aver inviato lo stato setta value a 128
+                  }
+                  else
+                    break;
+
+                  asynchBuffer[asynchLen++] = '§';
+                  asynchBuffer[asynchLen++] = 'y';
+
+#ifdef KNX
+// comando §y<source><linesector><destaddress><command>
+                  linesector = EEPROM.read(E_MQTT_TABDEVICES);
+                  asynchBuffer[asynchLen++] = 0x01;   // from device
+                  asynchBuffer[asynchLen++] = linesector; // to   device line-sector
+                  asynchBuffer[asynchLen++] = device; // to   device address
+#endif
+#ifdef SCS
+// comando §y<destaddress><source><type><command>
+                  asynchBuffer[asynchLen++] = device; // to   device
+                  asynchBuffer[asynchLen++] = 0x00;   // from device
+                  asynchBuffer[asynchLen++] = 0x12;   // type:command
+#endif
+
+                  asynchBuffer[asynchLen++] = command;// command
+                  break;
+
+                case 9:
+                  // --------------------------------------- COVERPCT alexa------------------------------------------------
+                  fauxmo.setState(alexa_id, 1, value);  // coverpct - lo stato deve sempre essere ON
+                  pct = value;
+                  pct *= 100;
+                  pct /= 255;
+
+                  if (alexacommand == 2) // spegni / ferma  <----------------
+                  {
+                    command = 0;
+                    if (value < 5)
+                      fauxmo.setState(alexa_id, 0, value);
+                  }
+                  else if (alexacommand == 1) // accendi (SU) <----------
+                  {
+                    command = 1;
+                  }
+                  else if (alexacommand == 4) // alza  <----------------
+                  {
+                    command = 1;
+                    command = pct;
+                  }
+                  else if (alexacommand == 5) // abbassa  <----------------
+                  {
+                    command = 2;
+                    command = pct;
+                  }
+                  else // (alexacommand == 3) // non cambia  <----------------
+                    break;
+
+
+                  asynchBuffer[asynchLen++] = '§';
+                  asynchBuffer[asynchLen++] = 'u';
+                  asynchBuffer[asynchLen++] = device;		// to   device
+                  asynchBuffer[asynchLen++] = command;    // command (%)
+                  break;
+              } // end switch
+
+            } // end uartsemaphor
+          } // end else   an scs device
+        });
+
+
+
+      }  // end if alexa
+      else
+      {
+#ifdef DEBUG
+        Serial.println("open UDP port");
+#endif
+        udpopen = udpConnection.begin(udpLocalPort);
+#ifdef DEBUG
+        if (udpopen == 1)
+          Serial.println ( "UDP server started" );
+        else
+          Serial.println ( "UDP open ERROR" );
+#endif
+      }
+      Serial.write('@');   // set led lamps
+      Serial.write(0xF1);  // set led lamps std-freq (client mode)
+
+
+
+      // =================================================================================================
+
+      if ((mqtt_server[0] >= '0') && (mqtt_server[0] <= '9'))
+      {
+#if defined DEBUG
+        Serial.print("MQTT set server ");
+        Serial.println(mqtt_server);
+#endif
+        mqttopen = 1;
+        client.setServer(mqtt_server, atoi(mqtt_port));    // Configure MQTT connexion
+        client.setCallback(MqttCallback);           // callback function to execute when a MQTT message
+      }
+      // =================================================================================================
+      if ((alexaParam == 'y') && (firstTime == 0))
+        setFirst();  // DEVONO essere attivi @MX  e @l
+    }
+    else
+    {
+      // CONNESSIONE WIFI FALLITA . REBOOT
+      ESP.restart();
+    }
+  } //  (( esid.length() > 1 ) && (digitalRead(2) == 1) && (forceAP == 0)) // connessione al router
+  else
+  {
+    // access point mode
+    setupAP();
+    Serial.write('@');   // set led lamps
+    Serial.write(0xF2);  // set led lamps high-freq (AP mode)
+  }
 
 
 
@@ -2694,314 +3216,38 @@ void setup() {
 #endif
 #endif
 
-#ifdef DEBUG
-      Serial.println("Ready");
-      Serial.print("IP address: ");
-      Serial.println(WiFi.localIP());
-#endif
 
+  
+}
+// -----------------------------------------------------------------------------------------------------------------------------------------------
+String tcpJarg(char * mybuffer, char * argument)
+{
+  String val;
 
-
-
-
-      // ==================================== alexa - fauxmo ================================================
-
-      if (alexaParam == 'y' )
-      {
-
-        // By default, fauxmoESP creates it's own webserver on the defined port
-        // The TCP port must be 80 for gen3 devices (default is 1901)
-        // This has to be done before the call to enable()
-
-        fauxmo.createServer(true); // not needed, this is the default value
-        fauxmo.setPort(80); // This is required for gen3 devices
-
-        // You have to call enable(true) once you have a WiFi connection
-        // You can enable or disable the library at any moment
-        // Disabling it will prevent the devices from being discovered and switched
-
-        fauxmo.enable(true);
-#ifdef DEBUG
-        Serial.println("- fauxmo enabled");
-        Serial.printf("[START] Free heap: %d bytes\r\n", ESP.getFreeHeap());
-#endif
-#define ID_MY           "interfaccia scs"
-
-        // fauxmo ALEXA add devices <=============================================================================================
-
-        id_interfaccia_scs = fauxmo.addDevice(ID_MY, 0);
-
-        char devtype;
-        char devx;
-        for (devx = 1; devx < 168; devx++)
-        {
-          devtype = EEPROM.read(devx + E_MQTT_TABDEVICES);
-          if ((devtype > 0) && (devtype < 32))
-          {
-            String edesc = "";
-            edesc = ReadStream(&edesc[0], (int)E_ALEXA_DESC_DEVICE + (devx * E_ALEXA_DESC_LEN), E_ALEXA_DESC_LEN, 2); // tipo=0 binary array   1:ascii array   2:ascii string
-            
-            if (edesc != "")
-            {
-              if (devtype == 9)
-                id_fauxmo = fauxmo.addDevice(&edesc[0], 1);
-              else
-                id_fauxmo = fauxmo.addDevice(&edesc[0], 128);
-              alexa_scs_id[id_fauxmo] = devx;  // index: device id alexa max 168 devices    data: ID scs
-            }
-          }
-        }
-        // ----------------------------------------------------------------------------------------------------
-        // ----------------------------------------------------------------------------------------------------
-        // ----------------------------------------------------------------------------------------------------
-
-
-#ifdef DEBUG
-        Serial.printf("[START] %d fauxmo devices added\r\n", id_fauxmo + 1);
-        Serial.printf("[START] Free heap: %d bytes\r\n", ESP.getFreeHeap());
-#endif
-
-
-
-
-        // fauxmo ALEXA callback <=============================================================================================
-
-        fauxmo.onSetState([](unsigned char device_id, const char * device_name, char alexacommand, unsigned char value)
-        { // callback start
-
-          // Callback when a command from Alexa is received.
-          // You can use device_id or device_name to choose the element to perform an action onto (relay, LED,...)
-          //// old // State is a bool (ON/OFF) and value a number from 0 to 255 (if you say "set kitchen light to 50%" you will receive a 128 here).
-          // command is a char (1=ON 2=OFF 3=bright equal  4=bright+   5=bright- )
-          // value is a number from 0 to 255 (if you say "set kitchen light to 50%" you will receive a 128 here).
-          // Just remember not to delay too much here, this is a callback, exit as soon as possible.
-          // If you have to do something more involved here set a flag and process it in your main loop.
-
-#ifdef DEBUG
-          Serial.printf("\r\n- Device #%d (%s) command: %d value: %d ", device_id, device_name, alexacommand, value);
-#endif
-
-          // Checking for device_id is simpler if you are certain about the order they are loaded and it does not change.
-          // Otherwise comparing the device_name is safer.
-
-          //      if (strcmp(device_name, ID_MY)==0)
-          if (device_id == id_interfaccia_scs)
-          {
-#ifdef DEBUG
-            Serial.println(ID_MY);
-#endif
-            if (alexacommand == 1) // accendi <----------------
-              system_update_cpu_freq(160);
-            else if (alexacommand == 2) // spegni <----------------
-              system_update_cpu_freq(80);
-          }
-          else // an scs device
-          {
-            char device = alexa_scs_id[device_id];
-            char devtype = EEPROM.read(device + E_MQTT_TABDEVICES);
-#ifdef DEBUG
-            Serial.printf("\r\n-       device SCS %02X - type: %02X ", device, devtype);
-#endif
-
-            // If your device state is changed by any other means (MQTT, physical button,...)
-            // you can instruct the library to report the new state to Alexa on next request:
-            // fauxmo.setState(ID_YELLOW, true, 255);
-
-            if (uartSemaphor == 0)
-            {
-              if (firstTime == 0) setFirst();  // DEVONO essere attivi @MX  e @l
-              unsigned char command;
-              char stato = fauxmo.getState(device_id);
-              switch (devtype)
-              {
-                // --------------------------------------- SWITCHES -------------------------------------------
-                case 1:
-                  if (alexacommand == 1) // accendi <----------------
-                  {
-                    command = 0;
-                    fauxmo.setState(device_id, stato | 1, 128);
-                  }
-                  else if (alexacommand == 2) // spegni  <----------------
-                  {
-                    command = 1;
-                    fauxmo.setState(device_id, stato & 0xFE, 128);
-                  }
-                  else
-                    break;
-
-                  requestBuffer[requestLen++] = '§';
-                  requestBuffer[requestLen++] = 'y';
-
-#ifdef SCS
-                  requestBuffer[requestLen++] = device; // to   device
-                  requestBuffer[requestLen++] = 0x00;   // from device
-                  requestBuffer[requestLen++] = 0x12;   // type:command
-                  requestBuffer[requestLen++] = command;// command
-#endif
-                  break;
-
-
-                case 3:
-#ifdef SCS //  per ora dimmer solo SCS
-                  // --------------------------------------- LIGHTS DIMM ------------------------------------------
-                  if (alexacommand == 1) // accendi  <----------------
-                  {
-                    command = 0;
-                    fauxmo.setState(device_id, stato | 1, 0);
-                  }
-                  else if (alexacommand == 2) // spegni <----------------
-                  {
-                    command = 1;
-                    fauxmo.setState(device_id, stato & 0xFE, 0);
-                  }
-                  else if ((alexacommand == 3) || (alexacommand == 4) || (alexacommand == 5)) // cambia il valore  <----------------
-                  {
-                    fauxmo.setState(device_id, 1, value);
-
-                    // trasformare da % a 1D-9D <--------------------------------------------------------------
-                    int pct = value;    // percentuale da 0 a 255
-                    pct *= 100;                  // da 0 a 25500
-                    pct /= 255;                  // da 0 a 100
-                    pct += 5;                    // arrotondamento
-                    pct /= 10;                   // 0-10
-                    if (pct > 9) pct = 9;
-                    if (pct == 0) pct = 1;	   // 1-9
-                    pct *= 16;                   // hex high nibble
-                    pct += 0x0D;                 // hex low  nibble
-                    command = (unsigned char) pct;
-                  }
-                  else
-                    break;
-
-                  requestBuffer[requestLen++] = '§';
-                  requestBuffer[requestLen++] = 'y';
-                  requestBuffer[requestLen++] = device; // to   device
-                  requestBuffer[requestLen++] = 0x00;   // from device
-                  requestBuffer[requestLen++] = 0x12;   // type:command
-                  requestBuffer[requestLen++] = command;// command
-
-#endif
-                  break;
-
-                case 8:
-                  // --------------------------------------- COVER ---------------------------------------------------
-                  if ((alexacommand == 2) || (alexacommand == 1)) // spegni / ferma  <--oppure accendi------
-                  {
-                    command = 0x0A;
-                    fauxmo.setState(device_id, stato | 0xC1, value); // 0xc1: dara' errore ma almeno evita il blocco
-                  }
-                  else if (alexacommand == 4) // alza  <----------------
-                  {
-                    command = 0x08;
-                    fauxmo.setState(device_id, stato | 0xC0, value); // 0xc0: dopo aver inviato lo stato setta value a 128
-                  }
-                  else if (alexacommand == 5) // abbassa  <----------------
-                  {
-                    command = 0x09;
-                    fauxmo.setState(device_id, stato | 0xC0, value); // 0xc0: dopo aver inviato lo stato setta value a 128
-                  }
-                  else
-                    break;
-
-                  requestBuffer[requestLen++] = '§';
-                  requestBuffer[requestLen++] = 'y';
-                  requestBuffer[requestLen++] = device; // to   device
-                  requestBuffer[requestLen++] = 0x00;   // from device
-                  requestBuffer[requestLen++] = 0x12;   // type:command
-                  requestBuffer[requestLen++] = command;// command
-                  break;
-
-                case 9:
-                  // --------------------------------------- COVERPCT alexa------------------------------------------------
-                  fauxmo.setState(device_id, 1, value);  // coverpct - lo stato deve sempre essere ON
-                  int pct = value;
-                  pct *= 100;
-                  pct /= 255;
-
-                  if (alexacommand == 2) // spegni / ferma  <----------------
-                  {
-                    command = 0;
-                    if (value < 5)
-                      fauxmo.setState(device_id, 0, value);
-                  }
-                  else if (alexacommand == 1) // accendi (SU) <----------
-                  {
-                    command = 1;
-                  }
-                  else if (alexacommand == 4) // alza  <----------------
-                  {
-                    command = 1;
-                    command = pct;
-                  }
-                  else if (alexacommand == 5) // abbassa  <----------------
-                  {
-                    command = 2;
-                    command = pct;
-                  }
-                  else
-                    break;
-
-                  requestBuffer[requestLen++] = '§';
-                  requestBuffer[requestLen++] = 'u';
-                  requestBuffer[requestLen++] = device;		// to   device
-                  requestBuffer[requestLen++] = command;    // command (%)
-                  break;
-              } // end switch
-
-            } // end uartsemaphor
-          } // end else   an scs device
-        });
-
-
-
-      }  // end if alexa
-      else
-      {
-#ifdef DEBUG
-        Serial.println("open UDP port");
-#endif
-        udpopen = udpConnection.begin(udpLocalPort);
-#ifdef DEBUG
-        if (udpopen)
-          Serial.println ( "UDP server started" );
-        else
-          Serial.println ( "UDP open ERROR" );
-#endif
-      }
-      Serial.write('@');   // set led lamps
-      Serial.write(0xF1);  // set led lamps std-freq (client mode)
-
-
-
-      // =================================================================================================
-
-      if ((mqtt_server[0] >= '0') && (mqtt_server[0] <= '9'))
-      {
-#if defined DEBUG
-        Serial.print("MQTT set server ");
-        Serial.println(mqtt_server);
-#endif
-        mqttopen = 1;
-        client.setServer(mqtt_server, atoi(mqtt_port));    // Configure MQTT connexion
-        client.setCallback(MqttCallback);           // callback function to execute when a MQTT message
-      }
-      // =================================================================================================
-      if ((alexaParam == 'y') && (firstTime == 0))
-        setFirst();  // DEVONO essere attivi @MX  e @l
-      return;
-    }
-    else
+  char* p1 = strstr(mybuffer, argument); // cerca l'argomento
+  if (p1)
+  {
+//  char* p2 = strstr(p1, ":");          // cerca successivo :
+    char* p2 = strchr(p1, ':');          // cerca successivo :
+    if (p2)
     {
-      // CONNESSIONE WIFI FALLITA . REBOOT
-      ESP.restart();
+//    char* p3 = strstr(p2, "\"");       // cerca successivo "
+      char* p3 = strchr(p2, '\"');       // cerca successivo "
+      if (p3)
+      {
+        p3++;
+        char l = 0;
+        while ((*p3 != '\"') && (l < 120))
+        {
+          val = val + *p3;
+          p3++;
+          l++;
+        }
+      }
     }
-  } //  (( esid.length() > 1 ) && (digitalRead(2) == 1) && (forceAP == 0)) // dati in eeprom, jumper assente, forzatura non digitata
+  }
 
-
-  // access point mode
-  setupAP();
-  Serial.write('@');   // set led lamps
-  Serial.write(0xF2);  // set led lamps high-freq (AP mode)
+  return val;
 }
 // -----------------------------------------------------------------------------------------------------------------------------------------------
 
@@ -3017,6 +3263,295 @@ void loop() {
   counter++;
   counter = 0;
 #endif
+
+
+      // ==================================== TCP server ====================================================
+#ifdef USE_TCPSERVER
+  if (tcpopen)
+  {
+   if (tcpserver.hasClient())
+   {
+    // client is connected
+    if (!tcpclient || !tcpclient.connected())
+    {
+      if(tcpclient) tcpclient.stop();          // client disconnected
+      tcpclient = tcpserver.available(); // ready for new client
+#ifdef DEBUG
+      Serial.println("CON "); // connesso !
+#endif
+    } else 
+    {
+      tcpserver.available().stop();  // have client, block new conections
+#ifdef DEBUG
+      Serial.println("STOP ");
+#endif
+    }
+   }
+  
+   if (tcpclient && tcpclient.connected())
+    tcpopen = 2;
+   else
+    tcpopen = 1;
+  
+  
+   if (tcpclient && tcpclient.connected() && tcpclient.available())
+   {
+    char tcpBuffer[255];
+    int  buflen;
+    int  pos = 0;
+    WORD_VAL maxp;
+    maxp.Val = 0;
+
+    char device  = 0;
+    char devtype = 0;
+    char deviceX = 0;
+    char linesector;
+    char nomeDevice[6];
+    char AlexaDescr[21];
+
+
+    // client input processing
+    while (tcpclient.available())
+    {
+#ifdef DEBUG
+      Serial.print(".");
+#endif
+      tcpBuffer[pos] = (uint8_t)tcpclient.read();
+      pos++;
+    }
+    buflen = pos;
+    tcpBuffer[pos] = 0;
+    
+#ifdef DEBUG 
+    Serial.print("rx: ");
+    Serial.write(&tcpBuffer[0], buflen);
+#endif
+
+// ------------------------------------------------------------------------------------------------------
+    if (memcmp(tcpBuffer, "#request",8) == 0)
+// ------------------------------------------------------------------------------------------------------
+    {
+      String busid = tcpJarg(tcpBuffer,"\"device\""); // bus id
+      deviceX = ixOfDevice(&busid[0]);
+      device = DeviceOfIx(deviceX);
+      
+      String sreq = tcpJarg(tcpBuffer,"\"request\""); // on-off-up-down-stop-nn%
+      String scmd = tcpJarg(tcpBuffer,"\"command\""); // 0xnn
+
+      if (scmd != "")
+      {
+        char command = aConvert(scmd);
+        requestBuffer[requestLen++] = '§';
+        requestBuffer[requestLen++] = 'y';
+
+#ifdef KNX
+// comando §y<source><linesector><destaddress><command>
+        linesector = EEPROM.read(E_MQTT_TABDEVICES);
+        requestBuffer[requestLen++] = 0x01;   // from device
+        requestBuffer[requestLen++] = linesector; // to   device line-sector
+        requestBuffer[requestLen++] = device; // to   device address
+#endif
+
+#ifdef SCS
+// comando §y<destaddress><source><type><command>
+        requestBuffer[requestLen++] = device; // to   device
+        requestBuffer[requestLen++] = 0x00;   // from device
+        requestBuffer[requestLen++] = 0x12;   // type:command
+#endif
+        requestBuffer[requestLen++] = command;// command
+      }
+    }	// #request
+    else
+// ------------------------------------------------------------------------------------------------------
+    if (memcmp(tcpBuffer, "#putdevice",10) == 0)
+// ------------------------------------------------------------------------------------------------------
+    {
+      String busid = tcpJarg(tcpBuffer,"\"device\"");
+      if (busid != "")
+      {
+        deviceX = ixOfDevice(&busid[0]);
+        device = DeviceOfIx(deviceX);
+        if ((busid != "") && (deviceX > 0) && (deviceX < 168))
+        {
+          String alexadescr = tcpJarg(tcpBuffer,"\"descr\"");
+          alexadescr.toCharArray(AlexaDescr, 21);  
+
+          if (alexaParam == 'y' )
+          {
+            String edesc = ReadStream(&edesc[0], (int)E_ALEXA_DESC_DEVICE + (deviceX * E_ALEXA_DESC_LEN), E_ALEXA_DESC_LEN, 2); // tipo=0 binary array   1:ascii array   2:ascii string
+            fauxmo.renameDevice(&edesc[0], &alexadescr[0]);
+          }
+          
+          WriteEEP(AlexaDescr, (int) deviceX * E_ALEXA_DESC_LEN + E_ALEXA_DESC_DEVICE, E_ALEXA_DESC_LEN);
+        
+          String stype = tcpJarg(tcpBuffer,"\"type\"");
+          devtype = stype[0] - '0';
+          if ((devtype > 0) && (devtype < 32))
+             WriteEEP(devtype, deviceX + E_MQTT_TABDEVICES);
+          String smaxpos = tcpJarg(tcpBuffer,"\"maxp\"");
+          if (devtype == 9)
+          {
+            char *ch;
+            maxp.Val = (int)strtoul(&smaxpos[0], &ch, 10);
+            requestBuffer[requestLen++] = '§';
+            requestBuffer[requestLen++] = 'U';
+            requestBuffer[requestLen++] = '8';
+            requestBuffer[requestLen++] = device;     // device id
+            requestBuffer[requestLen++] = devtype;    // device type
+            requestBuffer[requestLen++] = maxp.byte.HB;    // max position H
+            requestBuffer[requestLen++] = maxp.byte.LB;    // max position L
+            immediateSend();
+            immediateReceive('k');
+          } // devtype == 9
+#ifdef DEBUG 
+          sprintf(tcpBuffer, "{\"device\":\"%02X\",\"type\":\"%d\",\"maxp\":\"%d\"\
+                            ,\"descr\":\"%s\"}",device,devtype,maxp.Val,AlexaDescr);
+#endif
+        } // deviceX > 0
+      }  // busid != ""
+
+      String cover = tcpJarg(tcpBuffer,"\"coverpct\"");
+      if (cover == "false")
+      {
+        requestBuffer[requestLen++] = '§';
+        requestBuffer[requestLen++] = 'U';
+        requestBuffer[requestLen++] = '9';
+        immediateSend();
+        immediateReceive('k');
+      }  // cover == "false"
+
+      sprintf(tcpBuffer, "#ok");
+      buflen = 0;
+      while (tcpBuffer[buflen]) buflen++;
+      tcpclient.write(tcpBuffer, buflen);
+      EEPROM.commit();
+      tcpclient.flush();
+    }	// #putdevice
+    else
+// ------------------------------------------------------------------------------------------------------
+    if (memcmp(tcpBuffer, "#getdevice",10) == 0)
+// ------------------------------------------------------------------------------------------------------
+    {
+      deviceX = 1;
+      while (deviceX < 168)
+      {
+        devtype = EEPROM.read(deviceX + E_MQTT_TABDEVICES);
+        if ((devtype > 0) && (devtype < 32))
+        {
+          device = DeviceOfIx(deviceX, nomeDevice);
+          ReadStream(&AlexaDescr[0], (int) deviceX * E_ALEXA_DESC_LEN + E_ALEXA_DESC_DEVICE, E_ALEXA_DESC_LEN, 1); // tipo=0 binary array   1:ascii array   2:ascii string
+          maxp.Val = 0;
+          if (devtype == 9)
+          {
+            requestBuffer[requestLen++] = '§';
+            requestBuffer[requestLen++] = 'U';
+            requestBuffer[requestLen++] = '6';
+            requestBuffer[requestLen++] = device;
+            immediateSend();
+            char m = immediateReceive('[');
+            
+            if (m > 8)
+            {
+              maxp.Val = replyBuffer[2] | replyBuffer[1] << 8;
+            }
+            
+          }  // devtype == 9
+          sprintf(tcpBuffer, "{\"device\":\"%s\",\"type\":\"%d\",\"maxp\":\"%d\"\
+                              ,\"descr\":\"%s\"}",nomeDevice,devtype,maxp.Val,AlexaDescr);
+          buflen = 0;
+          while (tcpBuffer[buflen]) buflen++;
+          tcpclient.write(tcpBuffer, buflen);
+          tcpclient.flush();
+        } // devtype > 0
+        deviceX++;
+      } // while devicex < 168
+     
+      sprintf(tcpBuffer, "#eof");
+      buflen = 0;
+      while (tcpBuffer[buflen]) buflen++;
+      tcpclient.write(tcpBuffer, buflen);
+      tcpclient.flush();
+    } // received "#getdevices"
+    else
+// ------------------------------------------------------------------------------------------------------
+    if (memcmp(tcpBuffer, "#setup ",7) == 0)
+// ------------------------------------------------------------------------------------------------------
+    {
+      String uart = tcpJarg(tcpBuffer,"\"uart\"");
+      if (uart == "tcp")  
+      {
+        tcpuart = 1;
+//      udpopen = 0;
+      }
+      else
+      if (uart == "udp")
+      {
+        tcpuart = 0;
+//      udpopen = 1;
+      }
+
+      String freq = tcpJarg(tcpBuffer,"\"frequency\"");
+      if (freq == "160")  
+      {
+        system_update_cpu_freq(160);
+      }
+      else
+      if (freq == "80")
+      {
+        system_update_cpu_freq(80);
+      }
+
+      String debug = tcpJarg(tcpBuffer,"\"debug\"");
+      if (debug == "tcp")  
+      {
+        tcpuart = 2;
+      }
+
+      sprintf(tcpBuffer, "#ok");
+      buflen = 0;
+      while (tcpBuffer[buflen]) buflen++;
+      tcpclient.write(tcpBuffer, buflen);
+      tcpclient.flush();
+    }
+// ------------------------------------------------------------------------------------------------------
+    else
+    {
+      if (tcpuart == 1)
+      {
+        firstTime = 0;  // msg udp: ora i comandi MQTT vanno fatti precedere dal setup
+        int s = 0;
+        while (s < buflen)
+        {
+          Serial.write(tcpBuffer[s]);   // write on serial KNXgate/SCSgate
+          delayMicroseconds(120);
+          s++;
+        }
+        
+//      if (replyLen > 0)
+//      {
+//        tcpclient.write(replyBuffer, replyLen);
+//      }
+      }
+      else
+      {
+#ifdef DEBUG
+        Serial.print("error");
+#endif
+        tcpclient.write(tcpBuffer, buflen);
+//        tcpclient.flush(); 
+        tcpclient.write("#err", 4);
+//        tcpclient.flush(); 
+      }
+    }
+   } // tcpclient connected and available
+  } // tcpopen
+  // =========================================== FINE TCP ==========================================
+#endif
+
+
+
+
+
 
 
   // ================================================ OTA ==========================================
@@ -3128,6 +3663,7 @@ void loop() {
                   }
                   else
       */
+      
       if (strcmp(udpBuffer, "@Keep_alive") == 0)
       {
       }
@@ -3142,9 +3678,10 @@ void loop() {
         while (s < len)
         {
           Serial.write(udpBuffer[s]);   // write on serial KNXgate/SCSgate
-          delayMicroseconds(120);
+//        delayMicroseconds(120);
           s++;
         }
+        tcpuart = 0;
       }
     } // packetsize
   }   // udpopen == 1
@@ -3180,6 +3717,15 @@ void loop() {
         sprintf(logCh, "%02X > ", prefix);
         log += logCh;
       }
+#ifdef USE_TCPSERVER
+  #ifdef DEBUG_FAUXMO_TCP         
+      if (tcpuart == 2)  
+      {
+        sprintf(logCh, "%02X > ", prefix);
+        log += logCh;
+      }
+  #endif
+#endif
       replyBuffer[replyLen++] = prefix;
     }
     else
@@ -3192,6 +3738,15 @@ void loop() {
         sprintf(logCh, "%02X ", prefix);
         log += logCh;
       }
+#ifdef USE_TCPSERVER
+  #ifdef DEBUG_FAUXMO_TCP         
+      if (tcpuart == 2)  
+      {
+        sprintf(logCh, "%02X ", prefix);
+        log += logCh;
+      }
+  #endif
+#endif
     }
     while (Serial.available() && (replyLen < lmax))
     {
@@ -3203,6 +3758,15 @@ void loop() {
           sprintf(logCh, "%02X ", replyBuffer[replyLen]);
           log += logCh;
         }
+#ifdef USE_TCPSERVER
+  #ifdef DEBUG_FAUXMO_TCP         
+        if (tcpuart == 2)  
+        {
+          sprintf(logCh, "%02X ", replyBuffer[replyLen]);
+          log += logCh;
+        }
+  #endif
+#endif
         replyLen++;
         delayMicroseconds(INNERWAIT);
       }
@@ -3211,6 +3775,15 @@ void loop() {
 
 
     if ((mqtt_log == 'y') && (replyLen > 0)) WriteLog(log);
+#ifdef USE_TCPSERVER
+  #ifdef DEBUG_FAUXMO_TCP         
+    if ((tcpuart == 2) && (tcpclient) && (tcpclient.connected())) 
+    {
+      tcpclient.write((char*)&log[0], log.length());
+      tcpclient.flush(); 
+    }
+  #endif
+#endif
   } // serial_available
 
   replyBuffer[replyLen] = 0;
@@ -3219,23 +3792,37 @@ void loop() {
 
   // --------------------- RISPOSTA UDP se richiesto -------------------------------------------
 
-  if ((udp_remote_ip) && (replyLen) && (internal == 0))
-  {
-    if (httpResp == "")
-    {
-      int success;
-      do  {
-        success =  udpConnection.beginPacket(udp_remote_ip, udp_remote_port);
-      }   while (!success);
 
-      int n = 0;
-      while (n < replyLen)
+  if (tcpuart == 0)
+  {
+    if ((udpopen == 1) && (udp_remote_ip) && (replyLen) && (internal == 0))
+    {
+      if (httpResp == "")
       {
-        udpConnection.write(replyBuffer[n++]);     // UDP reply
+        int success;
+        do  {
+          success =  udpConnection.beginPacket(udp_remote_ip, udp_remote_port);
+        }   while (!success);
+
+        int n = 0;
+        while (n < replyLen)
+        {
+          udpConnection.write(replyBuffer[n++]);     // UDP reply
+        }
+        success = udpConnection.endPacket();
       }
-      success = udpConnection.endPacket();
-    }
-  } // udp_remote_ip
+    } // udp_remote_ip
+  }
+
+
+#ifdef USE_TCPSERVER
+  else
+  if ((tcpuart == 1) && (tcpclient) && (tcpclient.connected())) 
+  {
+    tcpclient.write(replyBuffer, replyLen);
+//  tcpclient.flush(); 
+  }
+#endif
 
 
   // --------------------- RISPOSTA HTTP se richiesto -------------------------------------------
@@ -3253,6 +3840,7 @@ void loop() {
 #ifdef SCS
       // intero  [7] A8 32 00 12 01 21 A3
       // ridotto [0xF5] [y] 32 00 12 01
+      // ----------------1---2--3--4--5--
       sprintf(hBuffer, "&type=%02X", replyBuffer[4]);
       content += hBuffer;
       sprintf(hBuffer, "&from=%02X", replyBuffer[3]);
@@ -3265,14 +3853,13 @@ void loop() {
 
 #ifdef KNX
       // intero  [9] B4 10 29 0B 65 E1 00 81 7C
-      // ridotto  [4] 29 0B 65 81
-      sprintf(hBuffer, "&from=%02X", replyBuffer[1]);
+      // ridotto  [0xF5] [y] 29 0B 65 81
+      // -----------------1---2--3--4--5--
+      sprintf(hBuffer, "&from=%02X", replyBuffer[2]);
       content += hBuffer;
-      sprintf(hBuffer, "&to=%02X", replyBuffer[2]);
+      sprintf(hBuffer, "&to=%02X%02X", replyBuffer[3], replyBuffer[4]);
       content += hBuffer;
-      sprintf(hBuffer, "%02X", replyBuffer[3]);
-      content += hBuffer;
-      sprintf(hBuffer, "&cmd=%02X", replyBuffer[4]);
+      sprintf(hBuffer, "&cmd=%02X", replyBuffer[5]);
       content += hBuffer;
 #endif
 
@@ -3291,7 +3878,6 @@ void loop() {
 
 
   // ------------[0xF3] [D] 32 00 ----(address,type)---------- CENSIMENTO DEVICES -------------------------------------------------------
-
   if ((replyLen == 4) && (devIx > 0) && (replyBuffer[0] == 0xF3) && (replyBuffer[1] == DEVICEREQUEST)) // started from handleMqttDevices
   {
     char devtype;
@@ -3339,9 +3925,14 @@ void loop() {
       {
         // descrizione standard per ALEXA - E_ALEXA_DESC_DEVICE 1024 // device description max 168 x E_ALEXA_DESC_LEN char
         char AlexaDescr[E_ALEXA_DESC_LEN];
+#ifdef SCS
         sprintf(AlexaDescr, "dispositivo scs %02X", devIx);  // device
+#endif
+#ifdef KNX
+        sprintf(AlexaDescr, "dispositivo knx ");
+        DeviceOfIx(devIx, (char *) &AlexaDescr[16]);
+#endif
         WriteEEP((char *) AlexaDescr, (int) devIx * E_ALEXA_DESC_LEN + E_ALEXA_DESC_DEVICE, E_ALEXA_DESC_LEN);
-//        WriteStream((char *) AlexaDescr, (int) devIx * E_ALEXA_DESC_LEN + E_ALEXA_DESC_DEVICE, E_ALEXA_DESC_LEN);
       }
 
       devIx++;
@@ -3356,13 +3947,15 @@ void loop() {
   // ----------------------------------------- FINE CENSIMENTO DEVICES -------------------------------------------------------
   else
 
-
-    // ----------------------------------------- ALEXA STATO DEVICES -------------------------------------------------------
-    if ((alexaParam == 'y') && (replyLen == 4) && (replyBuffer[0] == 0xF3) && (replyBuffer[1] == 'u'))    //
+  // ---------------------u-posizione tapparelle %----------------------------------------------------------------------------
+  if ((replyLen == 4) && (replyBuffer[0] == 0xF3) && (replyBuffer[1] == 'u'))    //u//
+  { // replyLen==4 && replyBuffer == 0xF3 'u'
+  // ----------------------------------------- ALEXA STATO DEVICES ---------------------------------------------------------
+    if ((alexaParam == 'y') && (replyLen == 4) && (replyBuffer[0] == 0xF3) && (replyBuffer[1] == 'u'))    //u//
     { // aggiornamento posizione coverpct fauxmo   [0xF3] [u] 32 00
       unsigned char id_alexa = 0;
 
-      while ((alexa_scs_id[id_alexa] != replyBuffer[2]) && (id_alexa <= id_fauxmo)) {
+      while ((alexa_BUS_id[id_alexa] != replyBuffer[2]) && (id_alexa <= id_fauxmo)) {
         id_alexa++;
       };  // index: device id alexa max 168 devices    data: ID scs
       if (id_alexa <= id_fauxmo)
@@ -3374,179 +3967,184 @@ void loop() {
         if (pct > 255) pct = 255;
         fauxmo.setState(id_alexa, 0xFF, pct);
       }
-
     } // alexaParam == 'y'
+    
+#ifdef NO_ALEXA_MQTT
     else
-      // ----------------------------------------- ALEXA STATO DEVICES END----------------------------------------------------
+#endif    
+
+    // ----------------------------------------- ALEXA STATO DEVICES END----------------------------------------------------
+
+    // --------SCS-----uab-(address position)--- PUBBLICAZIONE STATO COVERPCT -------------------------------------------------------
+    if ((mqttopen == 3) && (replyLen == 4) && (replyBuffer[0] == 0xF3) && (replyBuffer[1] == 'u'))    //u//
+    { // pubblicazione posizione coverpct   [0xF3] [u] 32 00
+      char actionc[6];
+
+      sprintf(actionc, "%03u", replyBuffer[3]);     // position
+      char nomeDevice[5];
+#ifdef SCS
+      sprintf(nomeDevice, "%02X", replyBuffer[2]);  // device
+#endif
+#ifdef KNX
+      char sectorline = EEPROM.read(E_MQTT_TABDEVICES);
+      sprintf(nomeDevice, "%02X%02X", sectorline, replyBuffer[2]);  // device
+#endif
+      String topic = COVERPCT_STATE;
+      topic += nomeDevice;
+      const char* cTopic = topic.c_str();
+      client.publish(cTopic, actionc, mqtt_persistence);
+    } // mqttopen == 3
+    replyLen = 0; // per impedire pubblicazione UDP
+  } // replyLen==4 && replyBuffer == 0xF3 'u'
+    
+  else
 
 
 
 
-      // --------SCS-----uab-(address position)--- PUBBLICAZIONE STATO COVERPCT -------------------------------------------------------
-      if ((mqttopen == 3) && (replyLen == 4) && (replyBuffer[0] == 0xF3) && (replyBuffer[1] == 'u'))    //
-      { // pubblicazione posizione coverpct   [0xF3] [u] 32 00
-        char actionc[6];
-        sprintf(actionc, "%03u", replyBuffer[3]);     // position
-        char nomeDevice[5];
-        sprintf(nomeDevice, "%02X", replyBuffer[2]);  // device
-        String topic = COVERPCT_STATE;
-        topic += nomeDevice;
-        const char* cTopic = topic.c_str();
-        client.publish(cTopic, actionc, mqtt_persistence);
-      } // mqttopen == 3
-      else
+  // --------SCS-----4abcd-(from-to-type-cmd)------- PUBBLICAZIONE STATO DEVICES -------------------------------------------------------
+  // --------KNX-----4abcd-(from-to-cmd)------------ PUBBLICAZIONE STATO DEVICES -------------------------------------------------------
 
+  if ((mqttopen == 3) && (replyLen == 6) && (replyBuffer[0] == 0xF5) && (replyBuffer[1] == 'y'))
+  { // START pubblicazione stato device        [0xF5] [y] 32 00 12 01
+    char devtype; //                                  0x79
+    char action;
+    String topic = "NOTOPIC";
+    String payload = "";
 
-
-
-        // --------SCS-----4abcd-(from-to-type-cmd)------- PUBBLICAZIONE STATO DEVICES -------------------------------------------------------
-        // --------KNX-----4abcd-(from-to-cmd)------------ PUBBLICAZIONE STATO DEVICES -------------------------------------------------------
-
-        if ((mqttopen == 3) && (replyLen == 6) && (replyBuffer[0] == 0xF5) && (replyBuffer[1] == 'y'))
-        { // START pubblicazione stato device        [0xF5] [y] 32 00 12 01
-          char devtype;
-          char action;
-          String topic = "NOTOPIC";
-          String payload = "";
-
-
-          // ================================ C O M A N D I     S C S ===========================================
+    // ================================ C O M A N D I     S C S ===========================================
 #ifdef SCS
 
-          // SCS intero   [7] A8 32 00 12 01 21 A3
-          // SCS ridotto [0xF5] [y] 32 00 12 01
+    // SCS intero   [7] A8 32 00 12 01 21 A3
+    // SCS ridotto [0xF5] [y] 32 00 12 01
 
-          char device = 0;
-          if (replyBuffer[4] == 0x12)  // <-comando----------------------------
+    char device = 0;
+    if (replyBuffer[4] == 0x12)  // <-comando----------------------------
+    {
+      action = replyBuffer[5];
+      if (replyBuffer[2] == 0xB1)   // <------------ indirizzato a TUTTI i devices
+      {
+        char nomeDevice[4];
+        const char* cPayload;
+        const char* cTopic;
+        if (action == 0)
+          payload = "ON";
+        else if (action == 1)
+          payload = "OFF";
+        for (device = 1; device < 168; device++)
+        {
+          devtype = EEPROM.read(device + E_MQTT_TABDEVICES);
+          if ((devtype == 1) || (devtype == 3))  // dimmer
           {
-            action = replyBuffer[5];
-
-            if (replyBuffer[2] == 0xB1)   // <------------ indirizzato a TUTTI i devices
-            {
-              char nomeDevice[4];
-              const char* cPayload;
-              const char* cTopic;
-              if (action == 0)
-                payload = "ON";
-              else if (action == 1)
-                payload = "OFF";
-              for (device = 1; device < 168; device++)
-              {
-                devtype = EEPROM.read(device + E_MQTT_TABDEVICES);
-                if ((devtype == 1) || (devtype == 3))  // dimmer
-                {
-                  sprintf(nomeDevice, "%02X", device);  // to
-                  topic = SWITCH_STATE;
-                  topic += nomeDevice;
-                  cPayload = payload.c_str();
-                  cTopic = topic.c_str();
-                  client.publish(cTopic, cPayload, mqtt_persistence);
-                }
-              }
-
-              device = 0;
-              devtype = 0;
-            }                            // <------------ indirizzato a TUTTI i devices
-            else
-            {
-              if (replyBuffer[2] < 0xB0)
-                device = replyBuffer[2];  // to
-              else
-                device = replyBuffer[3];  // from
-            }
-
-          } // <-replyBuffer[4] == 0x12---------------------comando----------------------------
-
-          if ((action == 0) || (action == 1))       // switch
-            devtype = 1;
-          else if ((action == 3) || (action == 4))      // dimmer
-            devtype = 0; // sono solo richieste di +/- , poi arrivera' l'intensita'
-          else if ((action == 0x08) || (action == 0x09) || (action == 0x0A))   // cover
-            devtype = 8;
-          else if ((action & 0x0F) == 0x0D) // da 0x1D a 0x9D
-          {
-            devtype = 3;
-            action >>= 4;
-            action *= 10;	// percentuale 10-90
-
-            // --------------- percentuale da 1 a 255 (home assistant) ----------------
-            //         if (domoticMode == 'h')   // h=as homeassistant
-            {
-              int pct = action;
-              pct *= 255;      // da 0 a 25500
-              pct /= 100;      // da 0 a 100
-              action = (char) pct;
-            }
-          }
-          else
-            devtype = 0;
-
-
-
-
-
-          if ((device != 0) && (devtype != 0))
-            //      if ((device != 0) && (devtype != 0) && ((device != prevDevice) || (action != prevAction)))
-          { // device valido & evitare doppioni
-            prevDevice = device;
-            prevAction = action;
-
-            char nomeDevice[5];
             sprintf(nomeDevice, "%02X", device);  // to
+            topic = SWITCH_STATE;
+            topic += nomeDevice;
+            cPayload = payload.c_str();
+            cTopic = topic.c_str();
+            client.publish(cTopic, cPayload, mqtt_persistence);
+          }
+        }
+        device = 0;
+        devtype = 0;
+      }                            // <------------ indirizzato a TUTTI i devices
+      else
+      {
+        if (replyBuffer[2] < 0xB0)
+          device = replyBuffer[2];  // to
+        else
+          device = replyBuffer[3];  // from
+      }
+    } // <-replyBuffer[4] == 0x12---------------------comando----------------------------
 
-            // ----------------------------------------- STATO SWITCH --------------------------------------------
-            if (devtype == 1)
-            {
-              if (action == 0)
-              {
-                payload = "ON";
-              }
-              else if (action == 1)
-              {
-                payload = "OFF";
-              }
+    if ((action == 0) || (action == 1))       // switch
+      devtype = 1;
+    else if ((action == 3) || (action == 4))      // dimmer
+      devtype = 0; // sono solo richieste di +/- , poi arrivera' l'intensita'
+    else if ((action == 0x08) || (action == 0x09) || (action == 0x0A))   // cover
+      devtype = 8;
+    else if ((action & 0x0F) == 0x0D) // da 0x1D a 0x9D
+    {
+      devtype = 3;
+      action >>= 4;
+      action *= 10;	// percentuale 10-90
 
-              topic = SWITCH_STATE;
-              topic += nomeDevice;
-            }
-            else
-              // ----------------------------------------- STATO DIMMER --------------------------------------------
-              if (devtype == 3)
-              {
-                char actionc[4];
-                sprintf(actionc, "%02u", action);
-                payload = String(actionc);
-                topic = BRIGHT_STATE;
-                topic += nomeDevice;
-              }
-              else
-                // ----------------------------------------- STATO COVER --------------------------------------------
-                if (devtype == 8)
-                {
-                  if (action == 0x08)
-                  {
-                    if (domoticMode == 'h')
-                      payload = "open";
-                    else
-                      payload = "OFF";
-                  }
-                  else if (action == 0x09)
-                  {
-                    if (domoticMode == 'h')
-                      payload = "closed";
-                    else
-                      payload = "ON";
-                  }
-                  else if (action == 0x0A)
-                  {
-                    payload = "STOP";
-                  }
+      // --------------- percentuale da 1 a 255 (home assistant) ----------------
+      //         if (domoticMode == 'h')   // h=as homeassistant
+      {
+        int pct = action;
+        pct *= 255;      // da 0 a 25500
+        pct /= 100;      // da 0 a 100
+        action = (char) pct;
+      }
+    }
+    else
+      devtype = 0;
 
-                  topic = COVER_STATE;
-                  topic += nomeDevice;
-                }
-            // ----------------------------------------------------------------------------------------------------
-            // ================================ F I N E   C O M A N D I     S C S ===========================================
+
+
+
+
+    if ((device != 0) && (devtype != 0))
+      //      if ((device != 0) && (devtype != 0) && ((device != prevDevice) || (action != prevAction)))
+    { // device valido & evitare doppioni
+      prevDevice = device;
+      prevAction = action;
+
+      char nomeDevice[5];
+      sprintf(nomeDevice, "%02X", device);  // to
+
+      // ----------------------------------------- STATO SWITCH --------------------------------------------
+      if (devtype == 1)
+      {
+        if (action == 0)
+        {
+          payload = "ON";
+        }
+        else if (action == 1)
+        {
+          payload = "OFF";
+        }
+        topic = SWITCH_STATE;
+        topic += nomeDevice;
+      }
+      else
+        // ----------------------------------------- STATO DIMMER --------------------------------------------
+      if (devtype == 3)
+      {
+        char actionc[4];
+        sprintf(actionc, "%02u", action);
+        payload = String(actionc);
+        topic = BRIGHT_STATE;
+        topic += nomeDevice;
+      }
+      else
+        // ----------------------------------------- STATO COVER --------------------------------------------
+      if (devtype == 8)
+      {
+        if (action == 0x08)
+        {
+          if (domoticMode == 'h')
+            payload = "open";
+          else
+            payload = "OFF";
+        }
+        else if (action == 0x09)
+        {
+          if (domoticMode == 'h')
+            payload = "closed";
+          else
+            payload = "ON";
+        }
+        else if (action == 0x0A)
+        {
+          payload = "STOP";
+        }
+
+        topic = COVER_STATE;
+        topic += nomeDevice;
+      } // devtype=8
+  // ----------------------------------------------------------------------------------------------------
+  // ================================ F I N E   C O M A N D I     S C S ===========================================
 #endif  // def SCS           
 
 
@@ -3558,102 +4156,97 @@ void loop() {
 
 
 
-            // ================================ C O M A N D I     K N X  ===========================================
+  // ================================ C O M A N D I     K N X  ===========================================
 #ifdef KNX
-            // KNX intero  [9] B4 10 29 0B 65 E1 00 81 7C
-            // KNX ridotto [4] 29 0B 65 81
+  // KNX intero  [9] B4 10 29 0B 65 E1 00 81 7C
+  // knx ridotto  [0xF5] [y] 29 0B 65 81
 
-            //    word device = word(replyBuffer[2], replyBuffer[3]);
+  //    word device = word(replyBuffer[2], replyBuffer[3]);
 
-            char sectorline = replyBuffer[2];  // sector & line da telegramma
-            char device = replyBuffer[3];      // id device da telegramma
-            char dispari = 0;
-            char eedev;
+      char sectorline = replyBuffer[3];  // sector & line da telegramma
+      char device = replyBuffer[4];      // id device da telegramma
+      char dispari = 0;
+      char eedev;
 
-            action = replyBuffer[4];
-            eedev = device;
-            if (device & 0x01)
+      action = replyBuffer[5];
+      eedev = device;
+      if (device & 0x01)
+      {
+        dispari = 1;           // dispari: id domoticz = id telegramma
+      }
+      else
+      {
+        device--;              // pari:    id domoticz = id telegramma - 1
+      }
+            
+      eedev = ixOfDevice(device);
+
+      devtype = EEPROM.read(eedev + E_MQTT_TABDEVICES);
+      if ((devtype < 0x01) || (devtype > 8))
+        devtype = 0x01;
+
+      if ((device != 0) && (devtype != 0))
+        //    if ((device != 0) && (devtype != 0) && ((device != prevDevice) || (action != prevAction)))
+      { // device valido & evitare doppioni
+        prevDevice = device;
+        prevAction = action;
+        char nomeDevice[6];
+        sprintf(nomeDevice, "%02X%02X", sectorline, device);  // to
+        // ----------------------------------------- STATO SWITCH --------------------------------------------
+        if (devtype == 1)
+        {
+          if (action == 0x81)
+          {
+             payload = "ON";
+          }
+          else if (action == 0x80)
+          {
+            payload = "OFF";
+          }
+          topic = SWITCH_STATE;
+          topic += nomeDevice;
+        }
+        else
+        // ----------------------------------------- STATO DIMMER --------------------------------------------
+        if (devtype == 4)
+        {
+
+        }
+        else
+        // ----------------------------------------- STATO COVER --------------------------------------------
+        if (devtype == 8)
+          if (dispari)    // stop
+          {
+            if ((action == 0x80) || (action == 0x81))
             {
-              dispari = 1;           // dispari: id domoticz = id telegramma
+              payload = "STOP";
             }
-            else
+            topic = COVER_STATE;
+            topic += nomeDevice;
+          }
+          else   //    (pari)    // up down
+          {
+            if (action == 0x80)
             {
-              device--;              // pari:    id domoticz = id telegramma - 1
-            }
-            eedev++;                  // id eeprom = id telegramma + 1 >> 1
-            eedev >>= 1;
-
-            devtype = EEPROM.read(eedev + E_MQTT_TABDEVICES);
-            if ((devtype < 0x01) || (devtype > 8))
-              devtype = 0x01;
-
-            if ((device != 0) && (devtype != 0))
-              //    if ((device != 0) && (devtype != 0) && ((device != prevDevice) || (action != prevAction)))
-            { // device valido & evitare doppioni
-              prevDevice = device;
-              prevAction = action;
-              char nomeDevice[6];
-              sprintf(nomeDevice, "%02X%02X", sectorline, device);  // to
-
-              // ----------------------------------------- STATO SWITCH --------------------------------------------
-              if (devtype == 1)
-              {
-                if (action == 0x81)
-                {
-                  payload = "ON";
-                }
-                else if (action == 0x80)
-                {
-                  payload = "OFF";
-                }
-
-                topic = SWITCH_STATE;
-                topic += nomeDevice;
-              }
+              if (domoticMode == 'h')
+                payload = "open";
               else
-                // ----------------------------------------- STATO DIMMER --------------------------------------------
-                if (devtype == 3)
-                {
+                payload = "OFF";
+            }
+            else if (action == 0x81)
+            {
+              if (domoticMode == 'h')
+                payload = "closed";
+              else
+                payload = "ON";
+            }
 
+            topic = COVER_STATE;
+            topic += nomeDevice;
+          }
 
-
-
-                }
-                else
-                  // ----------------------------------------- STATO COVER --------------------------------------------
-                  if (devtype == 8)
-                    if (dispari)    // stop
-                    {
-                      if ((action == 0x80) || (action == 0x81))
-                      {
-                        payload = "STOP";
-                      }
-                      topic = COVER_STATE;
-                      topic += nomeDevice;
-                    }
-                    else   //    (pari)    // up down
-                    {
-                      if (action == 0x80)
-                      {
-                        if (domoticMode == 'h')
-                          payload = "open";
-                        else
-                          payload = "OFF";
-                      }
-                      else if (action == 0x81)
-                      {
-                        if (domoticMode == 'h')
-                          payload = "closed";
-                        else
-                          payload = "ON";
-                      }
-
-                      topic = COVER_STATE;
-                      topic += nomeDevice;
-                    }
-
-              // ----------------------------------------------------------------------------------------------------
-              // ================================ F I N E   C O M A N D I     K N X ===========================================
+    // ----------------------------------------------------------------------------------------------------
+    // ================================ F I N E   C O M A N D I     K N X ===========================================
 #endif  // def KNX           
 
 
@@ -3663,23 +4256,23 @@ void loop() {
 
 
 
-              // ======================================== P U B B L I C A Z I O N E ===========================================
-              const char* cTopic = topic.c_str();
-              if (payload == "")
-              {
-                char cPayload[24];
-                sprintf(cPayload, "UNKNOWN: %02X %02X %02X %02X", replyBuffer[1], replyBuffer[2], replyBuffer[3], replyBuffer[4]);  // to
-                client.publish(cTopic, cPayload, 0);
-              }
-              else
-              {
-                const char* cPayload = payload.c_str();
-                client.publish(cTopic, cPayload, mqtt_persistence);
-              }
-            }      // evitare doppioni & device valido
-          } // END pubblicazione stato devices
+    // ======================================== P U B B L I C A Z I O N E ===========================================
+          const char* cTopic = topic.c_str();
+          if (payload == "")
+          {
+            char cPayload[24];
+            sprintf(cPayload, "UNKNOWN: %02X %02X %02X %02X", replyBuffer[1], replyBuffer[2], replyBuffer[3], replyBuffer[4]);  // to
+            client.publish(cTopic, cPayload, 0);
+          }
+          else
+          {
+            const char* cPayload = payload.c_str();
+            client.publish(cTopic, cPayload, mqtt_persistence);
+          }
+        }      // evitare doppioni & device valido
+      } // END pubblicazione stato devices
 
-          // ===============================================================================================================
+      // ===============================================================================================================
 
 
 
@@ -3708,6 +4301,111 @@ void loop() {
           // ===============================================================================================================
 
 
+
+
+
+
+          // =============================CICLO SCRITTURA BUFFER UART ASYNCH=================================================
+
+          if (asynchLen > 0)
+          {
+            uartSemaphor = 1;
+            // =========================== send control char and data over serial =============================
+            String log = "tx: ";
+            char logCh[4];
+            int s = 0;
+            char continua = 1;
+
+            while (continua)
+//          while (s < asynchLen)
+            {
+              //       Serial.flush();
+              //       Serial.write(asynchBuffer[s]);   // write on serial KNXgate/SCSgate - 90uS
+
+
+              // USS = uart register 1C-19 (32 bit)  bit 16-23=data nr in tx fifo   (USTXC = 16)
+              // UART STATUS Registers Bits
+              // USTX    31 //TX PIN Level
+              // USRTS   30 //RTS PIN Level
+              // USDTR   39 //DTR PIN Level
+              // USTXC   16 //TX FIFO COUNT (8bit)
+              // USRXD   15 //RX PIN Level
+              // USCTS   14 //CTS PIN Level
+              // USDSR   13 //DSR PIN Level
+              // USRXC    0 //RX FIFO COUNT (8bit)
+
+#ifdef DEBUG
+#else
+              while (((USS(0) >> USTXC) & 0xff) > 0)     {	// aspetta il buffer sia completamente vuoto
+                delay(0);
+              }
+
+              delayMicroseconds(OUTERWAIT);
+              USF(0) = asynchBuffer[s];    // scrittura SERIALE
+
+              while (((USS(0) >> USTXC) & 0xff) > 0)     {	// aspetta il buffer sia completamente vuoto
+                delay(0);
+              }
+#endif
+#ifdef DEBUG
+              sprintf(logCh, "%02X ", asynchBuffer[s]);
+              log += logCh;
+#else
+              if (mqtt_log == 'y')
+              {
+                sprintf(logCh, "%02X ", asynchBuffer[s]);
+                log += logCh;
+              }
+#endif
+#ifdef USE_TCPSERVER
+  #ifdef DEBUG_FAUXMO_TCP         
+              if (tcpuart == 2) 
+              {
+                sprintf(logCh, "%02X ", asynchBuffer[s]);
+                log += logCh;
+              }
+  #endif
+#endif
+
+              s++;
+              if (s >= asynchLen)
+              {
+                continua = 0;
+              }
+              else
+                 delayMicroseconds(OUTERWAIT); // 100uS
+            }
+#ifdef DEBUG
+            Serial.println("\r\n" + log);
+#else
+            if (mqtt_log == 'y') WriteLog(log);
+#endif
+
+#ifdef USE_TCPSERVER
+  #ifdef DEBUG_FAUXMO_TCP         
+            if ((tcpuart == 2) && (tcpclient) && (tcpclient.connected())) 
+            {
+              tcpclient.write((char*)&log[0], log.length());
+              tcpclient.flush(); 
+            }
+  #endif
+#endif
+
+            asynchLen = 0;
+            uartSemaphor = 0;
+          } // asynchlen > 0
+          
+
+
+
+
+
+
+
+
+
+
+          
 
 
 
@@ -3761,6 +4459,15 @@ void loop() {
                 log += logCh;
               }
 #endif
+#ifdef USE_TCPSERVER
+  #ifdef DEBUG_FAUXMO_TCP         
+              if (tcpuart == 2) 
+              {
+                sprintf(logCh, "%02X ", requestBuffer[s]);
+                log += logCh;
+              }
+  #endif
+#endif
               delayMicroseconds(OUTERWAIT); // 100uS
               s++;
             }
@@ -3769,9 +4476,22 @@ void loop() {
 #else
             if (mqtt_log == 'y') WriteLog(log);
 #endif
+
+#ifdef USE_TCPSERVER
+  #ifdef DEBUG_FAUXMO_TCP         
+            if ((tcpuart == 2) && (tcpclient) && (tcpclient.connected())) 
+            {
+              tcpclient.write((char*)&log[0], log.length());
+              tcpclient.flush(); 
+            }
+  #endif
+#endif
+
             requestLen = 0;
             uartSemaphor = 0;
           } // requestlen > 0
+          
+          
           // =====================================================================================================
           // =====================================================================================================
           if (webon == 1)
@@ -3779,4 +4499,196 @@ void loop() {
           // =====================================================================================================
           // =====================================================================================================
         }
+
+
+// =====================================================================================================
+// =====================================================================================================
+#ifdef KNX
+char ixOfDevice(char * knxdevice)
+{
+  char device;
+  char *ch;
+  if (*(knxdevice+2) == 0) // 2 caratteri
+      device = (char)strtoul(knxdevice, &ch, 16);
+  else
+  if (*(knxdevice+4) == 0) // 4 caratteri
+  {
+      char sectorline = EEPROM.read(E_MQTT_TABDEVICES);
+      device = (char)strtoul(knxdevice+2, &ch, 16);
+      *(knxdevice+2) = 0; // 2 caratteri
+      char sectlin = (char)strtoul(knxdevice, &ch, 16);
+      if (sectlin != sectorline)
+          EEPROM.write(E_MQTT_TABDEVICES, sectlin);
+  }
+  else
+  {
+    *(knxdevice+2) = 0; // 2 caratteri
+    device = (char)strtoul(knxdevice, &ch, 16);
+  }
+
+  device++;                  // id eeprom = id telegramma + 1 >> 1
+  device>>=1;
+//  devtype = EEPROM.read(knxdevice + E_MQTT_TABDEVICES);
+  return device;
+}
+//--------------------------------------------------------------------
+char ixOfDevice(char knxdevice)
+{
+//  0x4F (0100 1111) --> (0010 1000) 0x28
+//  0x50 (0101 0000) --> (0010 1000) 0x28
+//  0x51 (0101 0001) --> (0010 1001) 0x29
+//  0x51 (0101 0010) --> (0010 1001) 0x29
+
+  knxdevice++;                  // id eeprom = id telegramma + 1 >> 1
+  knxdevice>>=1;
+//  devtype = EEPROM.read(knxdevice + E_MQTT_TABDEVICES);
+  return knxdevice;
+}
+//--------------------------------------------------------------------
+char DeviceOfIx(char ixdevice)
+{
+//  (0010 1000) 0x28 --> 0x4F (0100 FFFF)  
+//  (0010 1001) 0x29 --> 0x51 (0101 0001)
+ 
+  char device = ixdevice;
+  device<<=1;   // ricostruito a 8 bit
+  device--;      // base dispari
+  return device;
+}
+//--------------------------------------------------------------------
+char DeviceOfIx(char ixdevice, char * knxname)
+{
+  char sectorline = EEPROM.read(E_MQTT_TABDEVICES);
+  char device = ixdevice;
+  device<<=1;   // ricostruito a 8 bit
+  device--;      // base dispari
+  sprintf(knxname, "%02X%02X", sectorline, device);  // to
+  return device;
+}
+//--------------------------------------------------------------------
+char DeviceOfIx(char sectorline, char ixdevice, char * knxname)
+{
+  char device = ixdevice;
+  device<<=1;   // ricostruito a 8 bit
+  device--;      // base dispari
+  sprintf(knxname, "%02X%02X", sectorline, device);  // to
+  return device;
+}
+#endif
+//--------------------------------------------------------------------
+
+
+//--------------------------------------------------------------------
+#ifdef SCS
+char ixOfDevice(char * scsdevice)
+{
+  char device;
+  char *ch;
+  *(scsdevice+2) = 0; // 2 caratteri
+  device = (char)strtoul(scsdevice, &ch, 16);
+
+  return device;
+//devtype = EEPROM.read(knxdevice + E_MQTT_TABDEVICES);
+}
+//--------------------------------------------------------------------
+char ixOfDevice(char scsdevice)
+{
+ return scsdevice;
+}
+//--------------------------------------------------------------------
+char DeviceOfIx(char ixdevice)
+{
+  return ixdevice;
+}
+//--------------------------------------------------------------------
+char DeviceOfIx(char ixdevice, char * scsname)
+{
+  sprintf(scsname, "%02X", ixdevice);
+  return ixdevice;
+}
+#endif
+// =====================================================================================================
+// =====================================================================================================
+char SendToPIC(char bufNr)
+{
+   char len = serOlen[bufNr];
+   // =============================CICLO SCRITTURA BUFFER UART =================================================
+   if (len > 0)
+   {
+     bufSemaphor = bufNr;
+     // =========================== send control char and data over serial =============================
+     String log = "tx: ";
+     char logCh[4];
+     int s = 0;
+     while (s < len)
+     {
+       // USS = uart register 1C-19 (32 bit)  bit 16-23=data nr in tx fifo   (USTXC = 16)
+       // UART STATUS Registers Bits
+       // USTX    31 //TX PIN Level
+       // USRTS   30 //RTS PIN Level
+       // USDTR   39 //DTR PIN Level
+       // USTXC   16 //TX FIFO COUNT (8bit)
+       // USRXD   15 //RX PIN Level
+       // USCTS   14 //CTS PIN Level
+       // USDSR   13 //DSR PIN Level
+       // USRXC    0 //RX FIFO COUNT (8bit)
+
+#ifdef DEBUG
+#else
+       while (((USS(0) >> USTXC) & 0xff) > 0)     
+       {	// aspetta il buffer sia completamente vuoto
+          delay(0);
+       }
+       delayMicroseconds(OUTERWAIT);
+       USF(0) = serObuffer[bufNr,s];    // scrittura SERIALE
+       while (((USS(0) >> USTXC) & 0xff) > 0)     
+       {	// aspetta il buffer sia completamente vuoto
+          delay(0);
+       }
+#endif
+#ifdef DEBUG
+       sprintf(logCh, "%02X ", serObuffer[bufNr,s]);
+       log += logCh;
+#else
+       if (mqtt_log == 'y')
+       {
+         sprintf(logCh, "%02X ", serObuffer[bufNr,s]);
+         log += logCh;
+       }
+#endif
+#ifdef USE_TCPSERVER
+  #ifdef DEBUG_FAUXMO_TCP         
+       if (tcpuart == 2) 
+       {
+         sprintf(logCh, "%02X ", serObuffer[bufNr,s]);
+         log += logCh;
+       }
+  #endif
+#endif
+       s++;
+       if (s < len)
+          delayMicroseconds(OUTERWAIT); // 100uS
+
+#ifdef DEBUG
+       Serial.println("\r\n" + log);
+#else
+       if (mqtt_log == 'y') WriteLog(log);
+#endif
+
+#ifdef USE_TCPSERVER
+  #ifdef DEBUG_FAUXMO_TCP         
+       if ((tcpuart == 2) && (tcpclient) && (tcpclient.connected())) 
+       {
+          tcpclient.write((char*)&log[0], log.length());
+          tcpclient.flush(); 
+       }
+  #endif
+#endif
+     serOlen[bufNr] = 0;
+     bufSemaphor = -1;
+   } // len > 0
+}  
+// =====================================================================================================
+// =====================================================================================================
+
 

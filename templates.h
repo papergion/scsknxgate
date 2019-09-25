@@ -30,7 +30,7 @@ THE SOFTWARE.
 
 // ---------------------------------------------------------------------------------------------------
 #define SHORT_DECLARE
-// #define UNIQUE MACADDRESS
+//#define UNIQUE MACADDRESS
 #define UNIQUE_MY "scs#"
 // ---------------------------------------------------------------------------------------------------
 
@@ -46,7 +46,7 @@ PROGMEM const char FAUXMO_TCP_HEADERS[] =
 //"]";
 
 PROGMEM const char FAUXMO_TCP_STATE_RESPONSE[] = "["
-    "{\"success\":{\"/lights/%d/state/on\":%s}},"
+    "{\"success\":{\"/lights/%d/state/on\":%s}}"
 "]";
 
 PROGMEM const char FAUXMO_TCP_VALUE_RESPONSE[] = "["
