@@ -1,16 +1,12 @@
 //
 //-----------------------work in progress: riadattamento a knx <----------------
-//---------------------------------------: riverifica su scs   <----------------
+//---------------------------------------: riverificare su scs <----------------
 //
-// i comandi dimmer alza e abbassa mandano i cmd seriali ma che non fanno niente (errore gate)
-//           {A7}{6D}{33}{31}
-// dopo tanti abbassa il dimmer va in off - quando si alza alexa manda ON e BRI ma BRI viene perso
-//      per UART occupata...
-//           {A7}{79}{01}{0B}{33}{81}
-//           UART in use...
-//----------------------------------------------------------------------------------
+//
+//
+//--------------------------------------------------------------  --------------------
 #define _FW_NAME     "SCSKNXGATE"
-#define _FW_VERSION  "VER_4.346"
+#define _FW_VERSION  "VER_4.352"
 #define _ESP_CORE    "esp8266-2.5.2"  //  flash 36%   ram 43%
 //----------------------------------------------------------------------------------
 //
@@ -20,16 +16,20 @@
 //#define SCS
 //#define DEBUG
 
-//#define NO_ALEXA_MQTT
+// #define NO_ALEXA_MQTT
 #define USE_TCPSERVER
 #define TCP_PORT 5045
+// verificare DEBUG_FAUXMO_TCP in fauxmoesp.h
 
 #define USE_OTA
-//#define COMMIT_RARE
+// #define COMMIT_RARE
+
+#define BUFNR 2 // nr di buffer tx seriali
 
 /*
-  scsknxgate - gateway between KNXgate/SCSgate and ethernet application   UDP / HTTP / MQTT
+  scsknxgate - gateway between KNXgate/SCSgate and ethernet application   UDP / TCP / HTTP / MQTT
 
+  V 4.3 - use DIMMER on KNX
   V 4.2 - use TCP for download and update device tab
   V 4.1 - use OTA for wifi firmware update
   V 4.0 - use fauxmo for direct connection with echo dot devices
@@ -278,13 +278,10 @@ String httpResp = "";   // resp= nessuna risposta      resp=i conferma immediata
 char udpBuffer[255];
 char requestBuffer[36];
 unsigned char requestLen = 0;
-char asynchBuffer[16];
-unsigned char asynchLen = 0;
 
-char serObuffer[2,16];
-char serOlen[2] = {0,0};
-char bufSemaphor = -1;
-
+char serObuffer[BUFNR][16];
+char serOlen[BUFNR] = {0,0};
+signed char bufSemaphor = -1;
 
 char replyBuffer[255];
 unsigned char replyLen;
@@ -1515,6 +1512,53 @@ void MqttCallback(char* topic, byte* payload, unsigned int length)
 
 
 
+#ifdef KNX //  dimmer KNX
+
+  if (topicString.substring(0, sizeof(BRIGHT_SET) - 1) == BRIGHT_SET)
+  {
+#ifdef DEBUG
+    rtopic = BRIGHT_STATE;
+    Serial.println("dimmer");
+#endif
+    dev[0] = *(topic + sizeof(BRIGHT_SET) - 1);
+    dev[1] = *(topic + sizeof(BRIGHT_SET));
+    dev[2] = *(topic + sizeof(BRIGHT_SET) + 1);
+    dev[3] = *(topic + sizeof(BRIGHT_SET) + 2);
+    dev[4] = 0;
+    device = (word)strtoul(dev, &ch, 16);
+    devtype = 4; // light
+
+    if (payloads.substring(0, 2) == "ON")
+      command = 0x80;
+    else
+    if (payloads.substring(0, 3) == "OFF")
+      command = 0x81;
+    else
+    {
+      int pct = atoi(packetBuffer);    // percentuale
+      // --------------- percentuale da 1 a 255 (home assistant) -----------
+      if (domoticMode == 'h')   // h=as homeassistant
+      { // percentuale 0-255
+        pct *= 100;                  // da 0 a 25500
+        pct /= 255;                  // da 0 a 100
+      }
+      // --------------- percentuale da 1 a 100 (domoticz) -----------------
+      // percentuale 0-100
+      pct += 5;
+      command = (unsigned char) pct;
+    }
+  }
+  else    
+#endif
+
+
+
+
+
+
+
+
+
 #ifdef SCS //  per ora dimmer solo SCS
     // --------------------------------------- LIGHTS DIMM ------------------------------------------
     if (topicString.substring(0, sizeof(BRIGHT_SET) - 1) == BRIGHT_SET)
@@ -1733,6 +1777,14 @@ void MqttCallback(char* topic, byte* payload, unsigned int length)
 #ifdef KNX
       requestBuffer[requestLen++] = lowByte(device); // to   device
 #endif
+      requestBuffer[requestLen++] = command;    // command (%)
+    }
+    else
+    if (devtype == 4)	// <====================DIMMER KNX=======================
+    {
+      requestBuffer[requestLen++] = '§';
+      requestBuffer[requestLen++] = 'm';
+      requestBuffer[requestLen++] = lowByte(device); // to   device
       requestBuffer[requestLen++] = command;    // command (%)
     }
     else
@@ -2255,7 +2307,7 @@ void immediateSend(void)
   if (requestLen > 0)
   {
     // =========================== send control char and data over serial =============================
-    String log = "tx: ";
+    String log = "\r\ntx: ";
     char logCh[4];
     uartSemaphor = 1;
     int s = 0;
@@ -2320,7 +2372,7 @@ char immediateReceive(char firstChar)
 
   if (Serial.available() )
   {
-    String log = "rx: ";
+    String log = "\r\nrx: ";
     char logCh[4];
     while (Serial.available() && (replyLen < 255))
     {
@@ -2387,6 +2439,7 @@ void manualInput(char prefix)
       break;
     case '1':  // switch
     case '3': // dimmer
+    case '4': // dimmer
     case '8': // cover
     case '9': // coverpct
       EEPROM.write(0x11 + E_MQTT_TABDEVICES, prefix - '0'); // cambia devicetype di scs 0x11
@@ -2805,6 +2858,12 @@ void setup() {
           Serial.printf("\r\n- Device #%d (%s) command: %d value: %d ", alexa_id, device_name, alexacommand, value);
 #endif
 
+          char bufNr = BufferSearch();
+
+//        if (bufSemaphor == -1)  bufNr = 0;
+//        else                    bufNr = 1;
+
+
 #ifdef USE_TCPSERVER
   #ifdef DEBUG_FAUXMO_TCP         
           if ((tcpuart == 2) && (tcpclient) && (tcpclient.connected())) 
@@ -2817,8 +2876,9 @@ void setup() {
             tcpclient.write(body, strlen(body));
             tcpclient.write("\r\n  res: ", 9);
             tcpclient.write(response, strlen(response));
-            if (uartSemaphor == 1)
-              tcpclient.write("\r\nUART in use... ", 16);
+            sprintf(tcpbuffer,"\r\n- UART semaphor %d   bufnr: %d   len 0-1: %d- %d       ", bufSemaphor, bufNr, serOlen[0], serOlen[1]);
+            tcpclient.write(tcpbuffer, 50);
+
             tcpclient.flush(); 
           }
   #endif
@@ -2853,7 +2913,6 @@ void setup() {
             // you can instruct the library to report the new state to Alexa on next request:
             // fauxmo.setState(ID_YELLOW, true, 255);
 
-///         if (uartSemaphor == 0)
             {
               if (firstTime == 0) setFirst();  // DEVONO essere attivi @MX  e @l
               unsigned char command;
@@ -2886,26 +2945,26 @@ void setup() {
                   }
                   else
                     break;
-
-                  asynchBuffer[asynchLen++] = '§';
-                  asynchBuffer[asynchLen++] = 'y';
+                    
+                  serObuffer[bufNr][serOlen[bufNr]++] = '§';
+                  serObuffer[bufNr][serOlen[bufNr]++] = 'y';
 
 #ifdef KNX
 // comando §y<source><linesector><destaddress><command>
                   linesector = EEPROM.read(E_MQTT_TABDEVICES);
-                  asynchBuffer[asynchLen++] = 0x01;   // from device
-                  asynchBuffer[asynchLen++] = linesector; // to   device line-sector
-                  asynchBuffer[asynchLen++] = device; // to   device address
+                  serObuffer[bufNr][serOlen[bufNr]++] = 0x01;       // from device
+                  serObuffer[bufNr][serOlen[bufNr]++] = linesector; // to   device line-sector
+                  serObuffer[bufNr][serOlen[bufNr]++] = device;     // to   device address
 #endif
 
 #ifdef SCS
 // comando §y<destaddress><source><type><command>
-                  asynchBuffer[asynchLen++] = device; // to   device
-                  asynchBuffer[asynchLen++] = 0x00;   // from device
-                  asynchBuffer[asynchLen++] = 0x12;   // type:command
+                  serObuffer[bufNr][serOlen[bufNr]++] = device;     // to   device address
+                  serObuffer[bufNr][serOlen[bufNr]++] = 0x00;       // from device
+                  serObuffer[bufNr][serOlen[bufNr]++] = 0x12;       // command type
 #endif
 
-                  asynchBuffer[asynchLen++] = command;// command
+                  serObuffer[bufNr][serOlen[bufNr]++] = command;    // command char
                   break;
 
 
@@ -2941,13 +3000,12 @@ void setup() {
                   else
                     break;
 
-                  asynchBuffer[asynchLen++] = '§';
-                  asynchBuffer[asynchLen++] = 'y';
-                  asynchBuffer[asynchLen++] = device; // to   device
-                  asynchBuffer[asynchLen++] = 0x00;   // from device
-                  asynchBuffer[asynchLen++] = 0x12;   // type:command
-                  asynchBuffer[asynchLen++] = command;// command
-
+                  serObuffer[bufNr][serOlen[bufNr]++] = '§';
+                  serObuffer[bufNr][serOlen[bufNr]++] = 'y';
+                  serObuffer[bufNr][serOlen[bufNr]++] = device;     // to   device address
+                  serObuffer[bufNr][serOlen[bufNr]++] = 0x00;       // from device
+                  serObuffer[bufNr][serOlen[bufNr]++] = 0x12;       // command type
+                  serObuffer[bufNr][serOlen[bufNr]++] = command;    // command char
 #endif
                   break;
 
@@ -2965,22 +3023,22 @@ void setup() {
                   ||  (alexacommand == 1)) // accendi <----------
                   {
                     command = (alexacommand & 1) | 0x80;
-                    asynchBuffer[asynchLen++] = '§';
-                    asynchBuffer[asynchLen++] = 'y';
+                    serObuffer[bufNr][serOlen[bufNr]++] = '§';
+                    serObuffer[bufNr][serOlen[bufNr]++] = 'y';
                   // comando §y<source><linesector><destaddress><command>
                     linesector = EEPROM.read(E_MQTT_TABDEVICES);
-                    asynchBuffer[asynchLen++] = 0x01;   // from device
-                    asynchBuffer[asynchLen++] = linesector; // to   device line-sector
-                    asynchBuffer[asynchLen++] = device; // to   device address                    
-                    asynchBuffer[asynchLen++] = command;// command
+                    serObuffer[bufNr][serOlen[bufNr]++] = 0x01;       // from device
+                    serObuffer[bufNr][serOlen[bufNr]++] = linesector; // to   device line-sector
+                    serObuffer[bufNr][serOlen[bufNr]++] = device;     // to   device address
+                    serObuffer[bufNr][serOlen[bufNr]++] = command;    // command char
                   }
                   else if ((alexacommand == 4)  // alza  <----------------
                        ||  (alexacommand == 5)) // abbassa  <----------------
                   {
-                    asynchBuffer[asynchLen++] = '§';
-                    asynchBuffer[asynchLen++] = 'm';
-                    asynchBuffer[asynchLen++] = device;		// to   device
-                    asynchBuffer[asynchLen++] = pct;        // command (%)
+                    serObuffer[bufNr][serOlen[bufNr]++] = '§';
+                    serObuffer[bufNr][serOlen[bufNr]++] = 'm';
+                    serObuffer[bufNr][serOlen[bufNr]++] = device;     // to   device address
+                    serObuffer[bufNr][serOlen[bufNr]++] = pct;        // %
                   }
 #endif
                   break;
@@ -3022,24 +3080,24 @@ void setup() {
                   else
                     break;
 
-                  asynchBuffer[asynchLen++] = '§';
-                  asynchBuffer[asynchLen++] = 'y';
+                  serObuffer[bufNr][serOlen[bufNr]++] = '§';
+                  serObuffer[bufNr][serOlen[bufNr]++] = 'y';
 
 #ifdef KNX
 // comando §y<source><linesector><destaddress><command>
                   linesector = EEPROM.read(E_MQTT_TABDEVICES);
-                  asynchBuffer[asynchLen++] = 0x01;   // from device
-                  asynchBuffer[asynchLen++] = linesector; // to   device line-sector
-                  asynchBuffer[asynchLen++] = device; // to   device address
+                  serObuffer[bufNr][serOlen[bufNr]++] = 0x01;       // from device
+                  serObuffer[bufNr][serOlen[bufNr]++] = linesector; // to   device line-sector
+                  serObuffer[bufNr][serOlen[bufNr]++] = device;     // to   device address
 #endif
 #ifdef SCS
 // comando §y<destaddress><source><type><command>
-                  asynchBuffer[asynchLen++] = device; // to   device
-                  asynchBuffer[asynchLen++] = 0x00;   // from device
-                  asynchBuffer[asynchLen++] = 0x12;   // type:command
+                  serObuffer[bufNr][serOlen[bufNr]++] = device;     // to   device address
+                  serObuffer[bufNr][serOlen[bufNr]++] = 0x00;       // from device
+                  serObuffer[bufNr][serOlen[bufNr]++] = 0x12;       // command type
 #endif
 
-                  asynchBuffer[asynchLen++] = command;// command
+                  serObuffer[bufNr][serOlen[bufNr]++] = command;    // command char
                   break;
 
                 case 9:
@@ -3073,10 +3131,10 @@ void setup() {
                     break;
 
 
-                  asynchBuffer[asynchLen++] = '§';
-                  asynchBuffer[asynchLen++] = 'u';
-                  asynchBuffer[asynchLen++] = device;		// to   device
-                  asynchBuffer[asynchLen++] = command;    // command (%)
+                  serObuffer[bufNr][serOlen[bufNr]++] = '§';
+                  serObuffer[bufNr][serOlen[bufNr]++] = 'u';
+                  serObuffer[bufNr][serOlen[bufNr]++] = device;     // to   device address
+                  serObuffer[bufNr][serOlen[bufNr]++] = command;        // %
                   break;
               } // end switch
 
@@ -3323,7 +3381,7 @@ void loop() {
     tcpBuffer[pos] = 0;
     
 #ifdef DEBUG 
-    Serial.print("rx: ");
+    Serial.print("\r\nrx: ");
     Serial.write(&tcpBuffer[0], buflen);
 #endif
 
@@ -3477,17 +3535,20 @@ void loop() {
     if (memcmp(tcpBuffer, "#setup ",7) == 0)
 // ------------------------------------------------------------------------------------------------------
     {
-      String uart = tcpJarg(tcpBuffer,"\"uart\"");
-      if (uart == "tcp")  
+      String debug = tcpJarg(tcpBuffer,"\"debug\"");
+      if (debug == "tcp")  
       {
-        tcpuart = 1;
-//      udpopen = 0;
+        tcpuart = 2;
       }
-      else
-      if (uart == "udp")
+      else if (debug == "no")  
       {
         tcpuart = 0;
-//      udpopen = 1;
+      }
+
+      String uart = tcpJarg(tcpBuffer,"\"uart\"");
+      if ((uart == "tcp")  && (tcpuart == 0))
+      {
+        tcpuart = 1;
       }
 
       String freq = tcpJarg(tcpBuffer,"\"frequency\"");
@@ -3499,12 +3560,6 @@ void loop() {
       if (freq == "80")
       {
         system_update_cpu_freq(80);
-      }
-
-      String debug = tcpJarg(tcpBuffer,"\"debug\"");
-      if (debug == "tcp")  
-      {
-        tcpuart = 2;
       }
 
       sprintf(tcpBuffer, "#ok");
@@ -3699,7 +3754,7 @@ void loop() {
   internal = 0;
   if (Serial.available() )
   {
-    String log = "rx: ";
+    String log = "\r\nrx: ";
     char logCh[4];
     char lmax;
     char prefix = Serial.read();        // receive from serial USB
@@ -3947,27 +4002,32 @@ void loop() {
   // ----------------------------------------- FINE CENSIMENTO DEVICES -------------------------------------------------------
   else
 
-  // ---------------------u-posizione tapparelle %----------------------------------------------------------------------------
-  if ((replyLen == 4) && (replyBuffer[0] == 0xF3) && (replyBuffer[1] == 'u'))    //u//
+  // ---------------------u-posizione tapparelle o dimmer %---------------------------------------------------------------------
+  if ((replyLen == 4) && (replyBuffer[0] == 0xF3))    
   { // replyLen==4 && replyBuffer == 0xF3 'u'
-  // ----------------------------------------- ALEXA STATO DEVICES ---------------------------------------------------------
-    if ((alexaParam == 'y') && (replyLen == 4) && (replyBuffer[0] == 0xF3) && (replyBuffer[1] == 'u'))    //u//
-    { // aggiornamento posizione coverpct fauxmo   [0xF3] [u] 32 00
-      unsigned char id_alexa = 0;
 
-      while ((alexa_BUS_id[id_alexa] != replyBuffer[2]) && (id_alexa <= id_fauxmo)) {
-        id_alexa++;
-      };  // index: device id alexa max 168 devices    data: ID scs
-      if (id_alexa <= id_fauxmo)
-      {
-        int pct = replyBuffer[3];
-        pct *= 255;
-        pct /= 100;
-        if (pct == 0)  pct = 1;
-        if (pct > 255) pct = 255;
-        fauxmo.setState(id_alexa, 0xFF, pct);
-      }
-    } // alexaParam == 'y'
+  // ----------------------------------------- ALEXA STATO DEVICES ---------------------------------------------------------
+    
+    if (replyBuffer[1] == 'u')    //'u': posizione tapparelle//
+    {
+      if (alexaParam == 'y')      //u//
+      { // aggiornamento posizione coverpct fauxmo   [0xF3] [u] 32 00
+        unsigned char id_alexa = 0;
+
+        while ((alexa_BUS_id[id_alexa] != replyBuffer[2]) && (id_alexa <= id_fauxmo)) 
+        {
+          id_alexa++;
+        };  // index: device id alexa max 168 devices    data: ID scs
+        if (id_alexa <= id_fauxmo)
+        {
+          int pct = replyBuffer[3];
+          pct *= 255;
+          pct /= 100;
+          if (pct == 0)  pct = 1;
+          if (pct > 255) pct = 255;
+          fauxmo.setState(id_alexa, 0xFF, pct);
+        }
+      } // alexaParam == 'y'
     
 #ifdef NO_ALEXA_MQTT
     else
@@ -3975,27 +4035,57 @@ void loop() {
 
     // ----------------------------------------- ALEXA STATO DEVICES END----------------------------------------------------
 
-    // --------SCS-----uab-(address position)--- PUBBLICAZIONE STATO COVERPCT -------------------------------------------------------
-    if ((mqttopen == 3) && (replyLen == 4) && (replyBuffer[0] == 0xF3) && (replyBuffer[1] == 'u'))    //u//
-    { // pubblicazione posizione coverpct   [0xF3] [u] 32 00
-      char actionc[6];
 
-      sprintf(actionc, "%03u", replyBuffer[3]);     // position
-      char nomeDevice[5];
+
+    // ----------------uab-(address position)--- PUBBLICAZIONE STATO COVERPCT -------------------------------------------------------
+      if (mqttopen == 3)    //u//
+      { // pubblicazione posizione coverpct   [0xF3] [u] 32 00
+        char actionc[6];
+
+        sprintf(actionc, "%03u", replyBuffer[3]);     // position
+        char nomeDevice[5];
 #ifdef SCS
-      sprintf(nomeDevice, "%02X", replyBuffer[2]);  // device
+        sprintf(nomeDevice, "%02X", replyBuffer[2]);  // device
 #endif
 #ifdef KNX
-      char sectorline = EEPROM.read(E_MQTT_TABDEVICES);
-      sprintf(nomeDevice, "%02X%02X", sectorline, replyBuffer[2]);  // device
+        char sectorline = EEPROM.read(E_MQTT_TABDEVICES);
+        sprintf(nomeDevice, "%02X%02X", sectorline, replyBuffer[2]);  // device
 #endif
-      String topic = COVERPCT_STATE;
-      topic += nomeDevice;
-      const char* cTopic = topic.c_str();
-      client.publish(cTopic, actionc, mqtt_persistence);
-    } // mqttopen == 3
+        String topic = COVERPCT_STATE;
+        topic += nomeDevice;
+        const char* cTopic = topic.c_str();
+        client.publish(cTopic, actionc, mqtt_persistence);
+      } // mqttopen == 3
+    }  // 'u'
+    
+    else
+    
+    
+    if (replyBuffer[1] == 'm')    //'m': posizione dimmer//
+    {
+    // ----------------uab-(address position)--- PUBBLICAZIONE STATO DIMMER -------------------------------------------------------
+      if (mqttopen == 3)    //u//
+      { // pubblicazione posizione dimmer   [0xF3] [m] 32 00
+        char actionc[6];
+
+        sprintf(actionc, "%03u", replyBuffer[3]);     // position
+        char nomeDevice[5];
+#ifdef SCS
+        sprintf(nomeDevice, "%02X", replyBuffer[2]);  // device
+#endif
+#ifdef KNX
+        char sectorline = EEPROM.read(E_MQTT_TABDEVICES);
+        sprintf(nomeDevice, "%02X%02X", sectorline, replyBuffer[2]);  // device
+#endif
+        String topic = BRIGHT_STATE;
+        topic += nomeDevice;
+        const char* cTopic = topic.c_str();
+        client.publish(cTopic, actionc, mqtt_persistence);
+      } // mqttopen == 3
+    }    
+    
     replyLen = 0; // per impedire pubblicazione UDP
-  } // replyLen==4 && replyBuffer == 0xF3 'u'
+  } // replyLen==4 && replyBuffer == 0xF3 
     
   else
 
@@ -4109,7 +4199,7 @@ void loop() {
       }
       else
         // ----------------------------------------- STATO DIMMER --------------------------------------------
-      if (devtype == 3)
+      if (((devtype == 3) ||(devtype == 4))
       {
         char actionc[4];
         sprintf(actionc, "%02u", action);
@@ -4210,7 +4300,11 @@ void loop() {
         // ----------------------------------------- STATO DIMMER --------------------------------------------
         if (devtype == 4)
         {
-
+          char actionc[4];
+          sprintf(actionc, "%02u", action);
+          payload = String(actionc);
+          topic = BRIGHT_STATE;
+          topic += nomeDevice;
         }
         else
         // ----------------------------------------- STATO COVER --------------------------------------------
@@ -4277,228 +4371,139 @@ void loop() {
 
 
 
-          // =====================================fauxmo handle (ALEXA) ====================================================
-          if (alexaParam == 'y' )
+      // =====================================fauxmo handle (ALEXA) ====================================================
+      if (alexaParam == 'y' )
+      {
+         // fauxmoESP uses an async TCP server but a sync UDP server
+        // Therefore, we have to manually poll for UDP packets
+        fauxmo.handle();
+
+#ifdef DEBUG
+        // This is a sample code to output free heap every 15 seconds
+        // This is a cheap way to detect memory leaks
+        //      static unsigned long last = millis();
+        //      if (millis() - last > 15000) {
+        //      last = millis();
+        //      Serial.printf("[MAIN] Free heap: %d bytes\n", ESP.getFreeHeap());
+        //      }
+#endif
+
+        // If your device state is changed by any other means (MQTT, physical button,...)
+        // you can instruct the library to report the new state to Alexa on next request:
+        // fauxmo.setState(ID_YELLOW, true, 255);
+      }  // alexaParam == 'y'
+      // ===============================================================================================================
+
+
+
+
+      // ===================================CICLO SCRITTURA BUFFER UART=================================================
+      if (requestLen > 0)
+      {
+        uartSemaphor = 1;
+        // =========================== send control char and data over serial =============================
+        String log = "\r\ntx: ";
+        char logCh[4];
+        int s = 0;
+        while (s < requestLen)
+        {
+          //       Serial.flush();
+          //       Serial.write(requestBuffer[s]);   // write on serial KNXgate/SCSgate - 90uS
+
+
+          // USS = uart register 1C-19 (32 bit)  bit 16-23=data nr in tx fifo   (USTXC = 16)
+          // UART STATUS Registers Bits
+          // USTX    31 //TX PIN Level
+          // USRTS   30 //RTS PIN Level
+          // USDTR   39 //DTR PIN Level
+          // USTXC   16 //TX FIFO COUNT (8bit)
+          // USRXD   15 //RX PIN Level
+          // USCTS   14 //CTS PIN Level
+          // USDSR   13 //DSR PIN Level
+          // USRXC    0 //RX FIFO COUNT (8bit)
+
+#ifdef DEBUG
+#else
+          while (((USS(0) >> USTXC) & 0xff) > 0)     {	// aspetta il buffer sia completamente vuoto
+            delay(0);
+          }
+
+          delayMicroseconds(OUTERWAIT);
+          USF(0) = requestBuffer[s];    // scrittura SERIALE
+
+          while (((USS(0) >> USTXC) & 0xff) > 0)     {	// aspetta il buffer sia completamente vuoto
+            delay(0);
+          }
+#endif
+#ifdef DEBUG
+          sprintf(logCh, "%02X ", requestBuffer[s]);
+          log += logCh;
+#else
+          if (mqtt_log == 'y')
           {
-            // fauxmoESP uses an async TCP server but a sync UDP server
-            // Therefore, we have to manually poll for UDP packets
-            fauxmo.handle();
-
-#ifdef DEBUG
-            // This is a sample code to output free heap every 15 seconds
-            // This is a cheap way to detect memory leaks
-            //      static unsigned long last = millis();
-            //      if (millis() - last > 15000) {
-            //      last = millis();
-            //      Serial.printf("[MAIN] Free heap: %d bytes\n", ESP.getFreeHeap());
-            //      }
+            sprintf(logCh, "%02X ", requestBuffer[s]);
+            log += logCh;
+          }
 #endif
-
-            // If your device state is changed by any other means (MQTT, physical button,...)
-            // you can instruct the library to report the new state to Alexa on next request:
-            // fauxmo.setState(ID_YELLOW, true, 255);
-          }  // alexaParam == 'y'
-          // ===============================================================================================================
-
-
-
-
-
-
-          // =============================CICLO SCRITTURA BUFFER UART ASYNCH=================================================
-
-          if (asynchLen > 0)
+#ifdef USE_TCPSERVER
+#ifdef DEBUG_FAUXMO_TCP         
+          if (tcpuart == 2) 
           {
-            uartSemaphor = 1;
-            // =========================== send control char and data over serial =============================
-            String log = "tx: ";
-            char logCh[4];
-            int s = 0;
-            char continua = 1;
-
-            while (continua)
-//          while (s < asynchLen)
-            {
-              //       Serial.flush();
-              //       Serial.write(asynchBuffer[s]);   // write on serial KNXgate/SCSgate - 90uS
-
-
-              // USS = uart register 1C-19 (32 bit)  bit 16-23=data nr in tx fifo   (USTXC = 16)
-              // UART STATUS Registers Bits
-              // USTX    31 //TX PIN Level
-              // USRTS   30 //RTS PIN Level
-              // USDTR   39 //DTR PIN Level
-              // USTXC   16 //TX FIFO COUNT (8bit)
-              // USRXD   15 //RX PIN Level
-              // USCTS   14 //CTS PIN Level
-              // USDSR   13 //DSR PIN Level
-              // USRXC    0 //RX FIFO COUNT (8bit)
-
-#ifdef DEBUG
-#else
-              while (((USS(0) >> USTXC) & 0xff) > 0)     {	// aspetta il buffer sia completamente vuoto
-                delay(0);
-              }
-
-              delayMicroseconds(OUTERWAIT);
-              USF(0) = asynchBuffer[s];    // scrittura SERIALE
-
-              while (((USS(0) >> USTXC) & 0xff) > 0)     {	// aspetta il buffer sia completamente vuoto
-                delay(0);
-              }
+            sprintf(logCh, "%02X ", requestBuffer[s]);
+            log += logCh;
+          }
 #endif
-#ifdef DEBUG
-              sprintf(logCh, "%02X ", asynchBuffer[s]);
-              log += logCh;
-#else
-              if (mqtt_log == 'y')
-              {
-                sprintf(logCh, "%02X ", asynchBuffer[s]);
-                log += logCh;
-              }
 #endif
-#ifdef USE_TCPSERVER
-  #ifdef DEBUG_FAUXMO_TCP         
-              if (tcpuart == 2) 
-              {
-                sprintf(logCh, "%02X ", asynchBuffer[s]);
-                log += logCh;
-              }
-  #endif
-#endif
-
-              s++;
-              if (s >= asynchLen)
-              {
-                continua = 0;
-              }
-              else
-                 delayMicroseconds(OUTERWAIT); // 100uS
-            }
-#ifdef DEBUG
-            Serial.println("\r\n" + log);
-#else
-            if (mqtt_log == 'y') WriteLog(log);
-#endif
-
-#ifdef USE_TCPSERVER
-  #ifdef DEBUG_FAUXMO_TCP         
-            if ((tcpuart == 2) && (tcpclient) && (tcpclient.connected())) 
-            {
-              tcpclient.write((char*)&log[0], log.length());
-              tcpclient.flush(); 
-            }
-  #endif
-#endif
-
-            asynchLen = 0;
-            uartSemaphor = 0;
-          } // asynchlen > 0
-          
-
-
-
-
-
-
-
-
-
-
-          
-
-
-
-
-          // ===================================CICLO SCRITTURA BUFFER UART=================================================
-
-          if (requestLen > 0)
-          {
-            uartSemaphor = 1;
-            // =========================== send control char and data over serial =============================
-            String log = "tx: ";
-            char logCh[4];
-            int s = 0;
-            while (s < requestLen)
-            {
-              //       Serial.flush();
-              //       Serial.write(requestBuffer[s]);   // write on serial KNXgate/SCSgate - 90uS
-
-
-              // USS = uart register 1C-19 (32 bit)  bit 16-23=data nr in tx fifo   (USTXC = 16)
-              // UART STATUS Registers Bits
-              // USTX    31 //TX PIN Level
-              // USRTS   30 //RTS PIN Level
-              // USDTR   39 //DTR PIN Level
-              // USTXC   16 //TX FIFO COUNT (8bit)
-              // USRXD   15 //RX PIN Level
-              // USCTS   14 //CTS PIN Level
-              // USDSR   13 //DSR PIN Level
-              // USRXC    0 //RX FIFO COUNT (8bit)
-
-#ifdef DEBUG
-#else
-              while (((USS(0) >> USTXC) & 0xff) > 0)     {	// aspetta il buffer sia completamente vuoto
-                delay(0);
-              }
-
-              delayMicroseconds(OUTERWAIT);
-              USF(0) = requestBuffer[s];    // scrittura SERIALE
-
-              while (((USS(0) >> USTXC) & 0xff) > 0)     {	// aspetta il buffer sia completamente vuoto
-                delay(0);
-              }
-#endif
-#ifdef DEBUG
-              sprintf(logCh, "%02X ", requestBuffer[s]);
-              log += logCh;
-#else
-              if (mqtt_log == 'y')
-              {
-                sprintf(logCh, "%02X ", requestBuffer[s]);
-                log += logCh;
-              }
-#endif
-#ifdef USE_TCPSERVER
-  #ifdef DEBUG_FAUXMO_TCP         
-              if (tcpuart == 2) 
-              {
-                sprintf(logCh, "%02X ", requestBuffer[s]);
-                log += logCh;
-              }
-  #endif
-#endif
-              delayMicroseconds(OUTERWAIT); // 100uS
-              s++;
-            }
-#ifdef DEBUG
-            Serial.println("\r\n" + log);
-#else
-            if (mqtt_log == 'y') WriteLog(log);
-#endif
-
-#ifdef USE_TCPSERVER
-  #ifdef DEBUG_FAUXMO_TCP         
-            if ((tcpuart == 2) && (tcpclient) && (tcpclient.connected())) 
-            {
-              tcpclient.write((char*)&log[0], log.length());
-              tcpclient.flush(); 
-            }
-  #endif
-#endif
-
-            requestLen = 0;
-            uartSemaphor = 0;
-          } // requestlen > 0
-          
-          
-          // =====================================================================================================
-          // =====================================================================================================
-          if (webon == 1)
-            server.handleClient();
-          // =====================================================================================================
-          // =====================================================================================================
+          delayMicroseconds(OUTERWAIT); // 100uS
+          s++;
         }
+#ifdef DEBUG
+        Serial.println("\r\n" + log);
+#else
+        if (mqtt_log == 'y') WriteLog(log);
+#endif
+
+#ifdef USE_TCPSERVER
+#ifdef DEBUG_FAUXMO_TCP         
+        if ((tcpuart == 2) && (tcpclient) && (tcpclient.connected())) 
+        {
+          tcpclient.write((char*)&log[0], log.length());
+          tcpclient.flush(); 
+        }
+#endif
+#endif
+
+        requestLen = 0;
+        uartSemaphor = 0;
+      } // requestlen > 0
+      
+
+
+
+
+
+
+      // ============================CICLO SCRITTURA BUFFER UART ASYNCH=================================================
+      char bufNr = 0;
+      while (bufNr < BUFNR)
+      {
+        if (serOlen[bufNr]) SendToPIC(bufNr);
+        bufNr++;
+      }
+      // ===============================================================================================================
+      
+      
+
+
+
+      
+      // =====================================================================================================
+      // =====================================================================================================
+      if (webon == 1)
+        server.handleClient();
+      // =====================================================================================================
+      // =====================================================================================================
+    }
 
 
 // =====================================================================================================
@@ -4609,6 +4614,18 @@ char DeviceOfIx(char ixdevice, char * scsname)
 #endif
 // =====================================================================================================
 // =====================================================================================================
+char BufferSearch(void)
+{
+   char bufNr = 0;
+   do
+   {
+     if (serOlen[bufNr] == 0)  return bufNr;
+     bufNr++;
+   } while (bufNr < BUFNR);
+   return 255;
+}
+// =====================================================================================================
+// =====================================================================================================
 char SendToPIC(char bufNr)
 {
    char len = serOlen[bufNr];
@@ -4617,7 +4634,7 @@ char SendToPIC(char bufNr)
    {
      bufSemaphor = bufNr;
      // =========================== send control char and data over serial =============================
-     String log = "tx: ";
+     String log = "\r\ntx: ";
      char logCh[4];
      int s = 0;
      while (s < len)
@@ -4640,19 +4657,19 @@ char SendToPIC(char bufNr)
           delay(0);
        }
        delayMicroseconds(OUTERWAIT);
-       USF(0) = serObuffer[bufNr,s];    // scrittura SERIALE
+       USF(0) = serObuffer[bufNr][s];    // scrittura SERIALE
        while (((USS(0) >> USTXC) & 0xff) > 0)     
        {	// aspetta il buffer sia completamente vuoto
           delay(0);
        }
 #endif
 #ifdef DEBUG
-       sprintf(logCh, "%02X ", serObuffer[bufNr,s]);
+       sprintf(logCh, "%02X ", serObuffer[bufNr][s]);
        log += logCh;
 #else
        if (mqtt_log == 'y')
        {
-         sprintf(logCh, "%02X ", serObuffer[bufNr,s]);
+         sprintf(logCh, "%02X ", serObuffer[bufNr][s]);
          log += logCh;
        }
 #endif
@@ -4660,7 +4677,7 @@ char SendToPIC(char bufNr)
   #ifdef DEBUG_FAUXMO_TCP         
        if (tcpuart == 2) 
        {
-         sprintf(logCh, "%02X ", serObuffer[bufNr,s]);
+         sprintf(logCh, "%02X ", serObuffer[bufNr][s]);
          log += logCh;
        }
   #endif
@@ -4668,20 +4685,20 @@ char SendToPIC(char bufNr)
        s++;
        if (s < len)
           delayMicroseconds(OUTERWAIT); // 100uS
-
+     }
 #ifdef DEBUG
-       Serial.println("\r\n" + log);
+     Serial.println("\r\n" + log);
 #else
-       if (mqtt_log == 'y') WriteLog(log);
+     if (mqtt_log == 'y') WriteLog(log);
 #endif
 
 #ifdef USE_TCPSERVER
   #ifdef DEBUG_FAUXMO_TCP         
-       if ((tcpuart == 2) && (tcpclient) && (tcpclient.connected())) 
-       {
-          tcpclient.write((char*)&log[0], log.length());
-          tcpclient.flush(); 
-       }
+     if ((tcpuart == 2) && (tcpclient) && (tcpclient.connected())) 
+     {
+        tcpclient.write((char*)&log[0], log.length());
+        tcpclient.flush(); 
+     }
   #endif
 #endif
      serOlen[bufNr] = 0;
@@ -4690,5 +4707,3 @@ char SendToPIC(char bufNr)
 }  
 // =====================================================================================================
 // =====================================================================================================
-
-
