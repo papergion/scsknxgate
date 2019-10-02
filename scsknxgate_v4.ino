@@ -1,12 +1,16 @@
 //
+// fauxmo
+// ok       devices  14  bytes 977
+//   KO     devices  14  bytes 1008
+//
 //-----------------------work in progress: riadattamento a knx <----------------
 //---------------------------------------: riverificare su scs <----------------
-//
+// ri-testare tapparelle e dimmer scs
 //
 //
 //--------------------------------------------------------------  --------------------
 #define _FW_NAME     "SCSKNXGATE"
-#define _FW_VERSION  "VER_4.352"
+#define _FW_VERSION  "VER_4.357"
 #define _ESP_CORE    "esp8266-2.5.2"  //  flash 36%   ram 43%
 //----------------------------------------------------------------------------------
 //
@@ -260,7 +264,7 @@ IPAddress local_ip(0, 0, 0, 0);
 IPAddress router_ip(0, 0, 0, 0);
 IPAddress udp_remote_ip;
 IPAddress tcp_remote_ip;
-char connectionType;  // 1=AP    0=router
+char connectionType = 255;  // 1=AP    0=router
 unsigned int udp_remote_port;
 unsigned int tcp_remote_port;
 char   webon = 0;
@@ -1299,17 +1303,35 @@ void handleDeviceName()  // denominazione devices scoperti - per alexa
 // =============================================================================================
 void handleScan()
 {
-  IPAddress ip = WiFi.softAPIP();
-  String ipStr = String(ip[0]) + '.' + String(ip[1]) + '.' + String(ip[2]) + '.' + String(ip[3]);
+  String sTemp;
+
+  if ( connectionType == 1 ) // server web AP
+    sTemp = WiFi.softAPIP().toString();
+  else
+    sTemp = WiFi.localIP().toString();
+    
   content = "<!DOCTYPE HTML>\r\n<html>Hello from ESP_" _MODO "GATE " _FW_VERSION " at ";
-  content += ipStr;
+  content += sTemp;
   content += "<p>";
   content += wifiSignals;
-  content += "</p><form method='get' action='setting'><label>SSID: </label><input name='ssid' length=32>\
-    <label>PSW: </label><input name='pass' length=64><label>IP address:<input name='ip' length=16></label>\
-    <label>Gateway IP<input name='rip' length=16></label></label><label>UDP port<input name='uport' length=5></label>\
-    <input type='submit'></form>";
-  content += "</html>";
+
+  content += "</p><form method='get' action='setting'><label>SSID: </label>";
+  content += "<input name='ssid' maxlength=32 value='";
+  sTemp = ReadStream(&sTemp[0], E_SSID, 32, 2);  // tipo=0 binary array   1:ascii array   2:ascii string
+  content += sTemp;
+  content += "' style='width:150px'><label> PSW: </label><input name='pass' maxlength=64 value='";
+  sTemp = ReadStream(&sTemp[0], E_PASSW, 32, 2);  // tipo=0 binary array   1:ascii array   2:ascii string
+  content += sTemp;
+  content += "' style='width:150px'><label> IP address:</label><input name='ip' maxlength=16 value='";
+  sTemp = ReadStream(&sTemp[0], E_IPADDR, 16, 2);  // tipo=0 binary   1:ascii   2=string
+  content += sTemp;
+  content += "' style='width:100px'><label> Gateway IP</label><input name='rip' maxlength=16 value='";
+  sTemp = ReadStream(&sTemp[0], E_ROUTIP, 16, 2);  // tipo=0 binary   1:ascii  2=string
+  content += sTemp;
+  content += "' style='width:100px'><label>UDP port</label><input name='uport' maxlength=5 value='";
+  sTemp = ReadStream(&sTemp[0], E_PORT, 6, 2);  // tipo=0 binary   1:ascii   2=string
+  content += sTemp;
+  content += "' style='width:50px'><input type='submit'></form></html>";
   server.send(200, "text/html", content);
   wifiSignals = "";
 }
@@ -1536,15 +1558,6 @@ void MqttCallback(char* topic, byte* payload, unsigned int length)
     else
     {
       int pct = atoi(packetBuffer);    // percentuale
-      // --------------- percentuale da 1 a 255 (home assistant) -----------
-      if (domoticMode == 'h')   // h=as homeassistant
-      { // percentuale 0-255
-        pct *= 100;                  // da 0 a 25500
-        pct /= 255;                  // da 0 a 100
-      }
-      // --------------- percentuale da 1 a 100 (domoticz) -----------------
-      // percentuale 0-100
-      pct += 5;
       command = (unsigned char) pct;
     }
   }
@@ -1559,7 +1572,7 @@ void MqttCallback(char* topic, byte* payload, unsigned int length)
 
 
 
-#ifdef SCS //  per ora dimmer solo SCS
+#ifdef SCS 
     // --------------------------------------- LIGHTS DIMM ------------------------------------------
     if (topicString.substring(0, sizeof(BRIGHT_SET) - 1) == BRIGHT_SET)
     {
@@ -2700,7 +2713,6 @@ void setup() {
   delay(50);           // wait 50ms
   Serial.flush();
 
-
   String qip = ReadStream(&qip[0], E_IPADDR, 16, 2);  // tipo=0 binary   1:ascii   2=string
   local_ip.fromString(qip);
 
@@ -2813,7 +2825,7 @@ void setup() {
             String edesc = "";
             edesc = ReadStream(&edesc[0], (int)E_ALEXA_DESC_DEVICE + (devx * E_ALEXA_DESC_LEN), E_ALEXA_DESC_LEN, 2); // tipo=0 binary array   1:ascii array   2:ascii string
             
-            if (edesc != "")
+            if ((edesc != "") && (edesc[0] > ' '))
             {
               if (devtype == 9)
                 id_fauxmo = fauxmo.addDevice(&edesc[0], 1);
@@ -3487,7 +3499,7 @@ void loop() {
     }	// #putdevice
     else
 // ------------------------------------------------------------------------------------------------------
-    if (memcmp(tcpBuffer, "#getdevice",10) == 0)
+    if (memcmp(tcpBuffer, "#getdevall",10) == 0)
 // ------------------------------------------------------------------------------------------------------
     {
       deviceX = 1;
@@ -3514,8 +3526,7 @@ void loop() {
             }
             
           }  // devtype == 9
-          sprintf(tcpBuffer, "{\"device\":\"%s\",\"type\":\"%d\",\"maxp\":\"%d\"\
-                              ,\"descr\":\"%s\"}",nomeDevice,devtype,maxp.Val,AlexaDescr);
+          sprintf(tcpBuffer, "{\"device\":\"%s\",\"type\":\"%d\",\"maxp\":\"%d\",\"descr\":\"%s\"}",nomeDevice,devtype,maxp.Val,AlexaDescr);
           buflen = 0;
           while (tcpBuffer[buflen]) buflen++;
           tcpclient.write(tcpBuffer, buflen);
@@ -3529,6 +3540,68 @@ void loop() {
       while (tcpBuffer[buflen]) buflen++;
       tcpclient.write(tcpBuffer, buflen);
       tcpclient.flush();
+    } // received "#getdevices"
+    else
+// ------------------------------------------------------------------------------------------------------
+    if (memcmp(tcpBuffer, "#getdevice",10) == 0)
+// ------------------------------------------------------------------------------------------------------
+    {
+      deviceX = 1;
+
+      String busid = tcpJarg(tcpBuffer,"\"device\"");
+      if (busid != "")
+      {
+        deviceX = ixOfDevice(&busid[0]);
+      }
+      else
+      busid = tcpJarg(tcpBuffer,"\"afterdev\"");
+      if (busid != "")
+      {
+        deviceX = ixOfDevice(&busid[0]);
+        deviceX++;
+      }
+      char sendOk = 0;
+      while ((deviceX < 168) && (sendOk == 0))
+      {
+        devtype = EEPROM.read(deviceX + E_MQTT_TABDEVICES);
+        if ((devtype > 0) && (devtype < 32))
+        {
+          device = DeviceOfIx(deviceX, nomeDevice);
+          ReadStream(&AlexaDescr[0], (int) deviceX * E_ALEXA_DESC_LEN + E_ALEXA_DESC_DEVICE, E_ALEXA_DESC_LEN, 1); // tipo=0 binary array   1:ascii array   2:ascii string
+          maxp.Val = 0;
+          if (devtype == 9)
+          {
+            requestBuffer[requestLen++] = '§';
+            requestBuffer[requestLen++] = 'U';
+            requestBuffer[requestLen++] = '6';
+            requestBuffer[requestLen++] = device;
+            immediateSend();
+            char m = immediateReceive('[');
+            
+            if (m > 8)
+            {
+              maxp.Val = replyBuffer[2] | replyBuffer[1] << 8;
+            }
+            
+          }  // devtype == 9
+          sprintf(tcpBuffer, "{\"device\":\"%s\",\"type\":\"%d\",\"maxp\":\"%d\",\"descr\":\"%s\"}",nomeDevice,devtype,maxp.Val,AlexaDescr);
+          buflen = 0;
+          while (tcpBuffer[buflen]) buflen++;
+          tcpclient.write(tcpBuffer, buflen);
+          tcpclient.flush();
+          sendOk = 1;
+        } // devtype > 0
+        deviceX++;
+      } // while ((deviceX < 168) && (sendOk == 0))
+     
+      if (sendOk == 0)
+      {
+        sprintf(tcpBuffer, "#eof");
+        buflen = 0;
+        while (tcpBuffer[buflen]) buflen++;
+        tcpclient.write(tcpBuffer, buflen);
+        tcpclient.flush();
+      }
     } // received "#getdevices"
     else
 // ------------------------------------------------------------------------------------------------------
@@ -4199,7 +4272,7 @@ void loop() {
       }
       else
         // ----------------------------------------- STATO DIMMER --------------------------------------------
-      if (((devtype == 3) ||(devtype == 4))
+      if ((devtype == 3) ||(devtype == 4))
       {
         char actionc[4];
         sprintf(actionc, "%02u", action);

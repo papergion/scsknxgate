@@ -216,7 +216,8 @@ bool fauxmoESP::_onTCPList(AsyncClient *client, String url, String body) {
     if (iDevice < _devices.size())
     {
       response += "{";
-      while ((response.length() < 2700) && (iDevice < _devices.size()))
+      while ((response.length() < 928) && (iDevice < _devices.size()))
+//    while ((response.length() < 2700) && (iDevice < _devices.size()))
       {
         if (first++ > 0) response += ",";
 #ifdef SHORT_DECLARE

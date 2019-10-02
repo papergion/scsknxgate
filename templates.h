@@ -56,6 +56,7 @@ PROGMEM const char FAUXMO_TCP_VALUE_RESPONSE[] = "["
 // Working with gen1 and gen3, ON/OFF/%, gen3 requires TCP port 80
 
 // json per dichiarativa iniziale - nel buffer (2920 bytes) ci stanno così fino a 37 dispositivi
+// se il buffer e' 1000 bytes) ci stanno fino a 12 dispositivi
 PROGMEM const char FAUXMO_DEVICE_JSON_TEMPLATE_FIRST[] = "{"
     "\"name\":\"%s\","    // max name length 20 bytes
     "\"uniqueid\":\""
