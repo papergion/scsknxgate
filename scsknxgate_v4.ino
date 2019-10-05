@@ -1,23 +1,13 @@
-//
-// fauxmo
-// ok       devices  14  bytes 977
-//   KO     devices  14  bytes 1008
-//
-//-----------------------work in progress: riadattamento a knx <----------------
-//---------------------------------------: riverificare su scs <----------------
-// ri-testare tapparelle e dimmer scs
-//
-//
 //--------------------------------------------------------------  --------------------
 #define _FW_NAME     "SCSKNXGATE"
-#define _FW_VERSION  "VER_4.357"
+#define _FW_VERSION  "VER_4.358"
 #define _ESP_CORE    "esp8266-2.5.2"  //  flash 36%   ram 43%
 //----------------------------------------------------------------------------------
 //
 //               ---- attenzione - porta http: 8080 <--se alexaParam=y------------------------
 
-#define KNX
-//#define SCS
+//#define KNX
+#define SCS
 //#define DEBUG
 
 // #define NO_ALEXA_MQTT
@@ -1154,9 +1144,10 @@ void handleDeviceName()  // denominazione devices scoperti - per alexa
         if (server.hasArg("type"))
         {
           String stype = server.arg("type");
-          char type = stype[0] - '0';
+          char type = (char) stype.toInt();
           devtype = EEPROM.read(deviceX + E_MQTT_TABDEVICES);
-          if ((type > 0) && (type < 32) && (type != devtype))
+//        if ((type > 0) && (type < 32) && (type != devtype))
+          if (type != devtype)
           {
             WriteEEP(type, deviceX + E_MQTT_TABDEVICES);
             devtype = type;
@@ -1232,6 +1223,8 @@ void handleDeviceName()  // denominazione devices scoperti - per alexa
       else
         sprintf(hBuffer, "nul");
     }
+    else
+      TypeDescr = String((char)devtype,10);
   }
 
   content = "<!DOCTYPE HTML>\r\n<html>Discovered device:";
@@ -3439,6 +3432,7 @@ void loop() {
       String busid = tcpJarg(tcpBuffer,"\"device\"");
       if (busid != "")
       {
+        busid += "  ";
         deviceX = ixOfDevice(&busid[0]);
         device = DeviceOfIx(deviceX);
         if ((busid != "") && (deviceX > 0) && (deviceX < 168))
@@ -3455,8 +3449,8 @@ void loop() {
           WriteEEP(AlexaDescr, (int) deviceX * E_ALEXA_DESC_LEN + E_ALEXA_DESC_DEVICE, E_ALEXA_DESC_LEN);
         
           String stype = tcpJarg(tcpBuffer,"\"type\"");
-          devtype = stype[0] - '0';
-          if ((devtype > 0) && (devtype < 32))
+          devtype = (char) stype.toInt();
+//        if ((devtype > 0) && (devtype < 32))
              WriteEEP(devtype, deviceX + E_MQTT_TABDEVICES);
           String smaxpos = tcpJarg(tcpBuffer,"\"maxp\"");
           if (devtype == 9)
@@ -3479,7 +3473,9 @@ void loop() {
 #endif
         } // deviceX > 0
       }  // busid != ""
-
+///      else
+///         sprintf(tcpBuffer, "#ok");
+      
       String cover = tcpJarg(tcpBuffer,"\"coverpct\"");
       if (cover == "false")
       {
