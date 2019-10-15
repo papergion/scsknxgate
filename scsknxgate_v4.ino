@@ -1,16 +1,18 @@
-//--------------------------------------------------------------  --------------------
+//----------------------------------------------------------------------------------
 #define _FW_NAME     "SCSKNXGATE"
-#define _FW_VERSION  "VER_4.358"
+#define _FW_VERSION  "VER_4.359"
 #define _ESP_CORE    "esp8266-2.5.2"  //  flash 36%   ram 43%
 //----------------------------------------------------------------------------------
 //
-//               ---- attenzione - porta http: 8080 <--se alexaParam=y------------------------
+//               ---- attenzione - porta http: 8080 <--se alexaParam=y--------------
+//
+//----------------------------------------------------------------------------------
 
-//#define KNX
-#define SCS
+#define KNX
+//#define SCS
 //#define DEBUG
 
-// #define NO_ALEXA_MQTT
+#define NO_ALEXA_MQTT
 #define USE_TCPSERVER
 #define TCP_PORT 5045
 // verificare DEBUG_FAUXMO_TCP in fauxmoesp.h
@@ -198,7 +200,7 @@ char mqtt_log;
 char mqtt_persistence = 0;
 char mqtt_port[6];
 char mqtt_retry = 0;
-char mqtt_retrylimit = 0;
+char mqtt_retrylimit = 24; //x 10=240sec (4min) -limite oltre il quale si resetta per broker non disponibile
 char mqttSectorLine = 0;    // knx sector/line
 char domoticMode;    // d=as domoticz      h=as homeassistant
 char alexaParam = 0;
@@ -3746,7 +3748,10 @@ void loop() {
         {
           mqtt_retry++;
           if ((mqtt_retrylimit > 0) && (mqtt_retry > mqtt_retrylimit))
-            mqttopen = 0;
+          {
+              ESP.restart();
+//            mqttopen = 0;   
+          }
         }
         else
           mqtt_retry = 0;
