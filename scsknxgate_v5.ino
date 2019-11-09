@@ -1,16 +1,20 @@
 //----------------------------------------------------------------------------------
 #define _FW_NAME     "SCSKNXGATE"
-#define _FW_VERSION  "VER_4.359"
-#define _ESP_CORE    "esp8266-2.5.2"  //  flash 36%   ram 43%
+#define _FW_VERSION  "VER_5.054"
+#define _ESP_CORE    "esp8266-2.5.2"
 //----------------------------------------------------------------------------------
 //
-//               ---- attenzione - porta http: 8080 <--se alexaParam=y--------------
+//        ---- attenzione - porta http: 8080 <--se alexaParam=y--------------
 //
 //----------------------------------------------------------------------------------
+// revisione solo KNX - gestione indirizzo a 2 bytes nelle tabelle
+//
+//
 
 #define KNX
 //#define SCS
 //#define DEBUG
+//#define MQTTLOG
 
 #define NO_ALEXA_MQTT
 #define USE_TCPSERVER
@@ -18,7 +22,6 @@
 // verificare DEBUG_FAUXMO_TCP in fauxmoesp.h
 
 #define USE_OTA
-// #define COMMIT_RARE
 
 #define BUFNR 2 // nr di buffer tx seriali
 
@@ -117,6 +120,8 @@ extern "C" {
 #define HTTP_PORT 80
 unsigned int http_port = 80;
 // =======================================================================================================================
+#define DEV_NR            128 // numero massimo di devices - da 00 a A8 per scs
+// =======================================================================================================================
 #ifdef KNX
 #define _MODO "KNX"
 #define _modo "knx"
@@ -182,6 +187,14 @@ unsigned int http_port = 80;
 #define NEW_SENSOR_PRES_STATE "\",\"state_topic\": \"" SENSOR_PRES_STATE
 #define NEW_SENSOR_PRES_UNIT "\",\"unit_of_measurement\": \"mBar"
 
+
+#define     ALARM_SWITCH_STATE MYPFX "/alarm/state/"
+#define NEW_ALARM_SWITCH_STATE "\",\"state_topic\": \"" ALARM_SWITCH_STATE    // armed or disarmed
+
+#define     ALARM_ZONE_STATE MYPFX "/alarm/zone/state/"
+#define NEW_ALARM_ZONE_STATE "\",\"state_topic\": \"" ALARM_ZONE_STATE
+
+
 #define NEW_DEVICE_END   "\"}";
 // =======================================================================================================================
 #include "fauxmoESP.h"
@@ -192,16 +205,16 @@ unsigned char ArduinoOTAflag = 0;
 #ifdef BLINKLED
 char ledCtr = 0;
 #endif
+
 // =======================================================================================================================
 char mqtt_server[32];
 char mqtt_user[32];
 char mqtt_password[20];
-char mqtt_log;
 char mqtt_persistence = 0;
 char mqtt_port[6];
 char mqtt_retry = 0;
+char mqtt_log = 0;
 char mqtt_retrylimit = 24; //x 10=240sec (4min) -limite oltre il quale si resetta per broker non disponibile
-char mqttSectorLine = 0;    // knx sector/line
 char domoticMode;    // d=as domoticz      h=as homeassistant
 char alexaParam = 0;
 
@@ -293,39 +306,58 @@ WiFiUDP udpConnection;
 
 #define E_SSID   0         // ssid wifi  max 32
 #define E_PASSW  32        // passw wifi max 32
-#define E_IPADDR 100       // my ipaddr  max 16
-#define E_ROUTIP 120       // router ip  max 16
-#define E_PORT   140       // udp port   max 6
-#define E_CALLBACK    150  // http callb max 100
+#define E_IPADDR 64        // my ipaddr  max 16
+#define E_ROUTIP 80        // router ip  max 16
+#define E_PORT   96        // udp port   max 6
+#define E_CALLBACK    102  // http callb max 100
 
-#define E_MQTT_BROKER 250  // mqtt_server   max 32
-#define E_MQTT_PORT   285  // mqtt_port     max 6
-#define E_DOMOTICMODE 291  // domotic mode  max 1
-#define E_MQTT_USER   295  // mqtt_user     max 32
-#define E_MQTT_PSWD   330  // mqtt_password max 32
-#define E_MQTT_LOG    362  // mqtt_log      max 1
-#define E_MQTT_PERSISTENCE    363  // mqtt_persistence      max 1
-#define E_ALEXA       364  // alexa interface max 1
+#define E_MQTT_BROKER 202  // mqtt_server   max 32
+#define E_MQTT_PORT   234  // mqtt_port     max 6
+#define E_DOMOTICMODE 240  // domotic mode  max 1
+#define E_MQTT_USER   241  // mqtt_user     max 32
+#define E_MQTT_PSWD   273  // mqtt_password max 32
+#define E_MQTT_LOG    305  // mqtt_log      max 1
+#define E_MQTT_PERSISTENCE 306  // mqtt_persistence      max 1
+#define E_ALEXA       307		// alexa interface max 1
+#define E_FILLER      308		// a disposizione  max 16
 
-#define E_MQTT_TABDEVICES 384 // mqtt_device max 168 ->  552
-//
-// per SCS indirizzo relativo (a E_MQTT_TABDEVICES) corrisponde a ID domoticz  e corrisponde a ID scs
-// per KNX indirizzo relativo (a E_MQTT_TABDEVICES) va shiftato a SX (*2) e sottratto 1
-//                                                  corrisponde cosi a ID domoticz e base KNX (dispari) -> LB
-//                               E_MQTT_TABDEVICES [0]   contiene      ID domoticz e base KNX         ---> HB
-//                               E_MQTT_TABDEVICES [indirizzo] contiene devtype
-//                                                                      1 = "switch"
-//                                                                      3 = "dimmer"
-//                                                                      4 = "dimmer knx"
-//                                                                      8 = "cover"
-//                                                                      9 = "coverpct"
-
-char alexa_BUS_id[168]; // pointer: id alexa   -   contenuto: device address reale (scs o knx)
-
-#define E_ALEXA_DESC_DEVICE 560 // device description max 168 x E_ALEXA_DESC_LEN char 
+#define E_MQTT_TABDEVICES 324	// mqtt_device max 128x4=512 -> 836
+#define E_MQTT_TABLEN       4	// 
+// ==============================================================================================================
+typedef union _DEVICE    {
+  struct {
+        char linesector;      
+        char address;	      
+        char type;		      
+        char alexa_id;		      
+        };
+  struct {
+        int  addressW;			      
+        char Type;		      
+        char Alexa_id;		      
+        };
+  struct {
+        long int  Val;			      
+        };
+} DEVADDR;
+// ==============================================================================================================
+DEVADDR device_BUS_id[DEV_NR]; // index:device index,  contenuto: device address reale (scs o knx) e tipo
+char alexa_BUS_ix[DEV_NR];     // index:id alexa, contenuto: device index
+// ==============================================================================================================
+#define E_ALEXA_DESC_DEVICE 836 // device description max DEV_NR x E_ALEXA_DESC_LEN char 
 #define E_ALEXA_DESC_LEN     20 // device description max length - top 
+// 836 + 128*20 = 3396
+// ==============================================================================================================
+#ifdef DEBUGT
+static inline int32_t asm_ccount(void) {
 
-// -----------------------------------------------------------------------------------------------------------------------------------------------
+    int32_t r;
+
+    asm volatile ("rsr %0, ccount" : "=r"(r));
+    return r;
+}
+#endif
+// ==============================================================================================================
 bool testWifi(void) {
   int c = 0;
 #ifdef DEBUG
@@ -464,6 +496,7 @@ void handleNotFound() {
     message += " " + server.argName(i) + ": " + server.arg(i) + "\n";
   }
   server.send(404, "text/plain", message);
+  WriteEEP((char*)&device_BUS_id[0], E_MQTT_TABDEVICES, (int) DEV_NR * E_MQTT_TABLEN);
   EEPROM.commit();
 }
 
@@ -682,8 +715,16 @@ void handleGate() //  ipaddress/request?type=x&from=xx&to=yy&cmd=zz&resp=y
       uartSemaphor = 1;
       requestBuffer[requestLen++] = '§';
       requestBuffer[requestLen++] = 'u';
+#ifdef SCS
       requestBuffer[requestLen++] = cto;
+#endif
+#ifdef KNX
       requestBuffer[requestLen++] = ccmd;
+      char a1 = highByte(cto);
+      char a2 = lowByte(cto);
+      requestBuffer[requestLen++] = a1;
+      requestBuffer[requestLen++] = a2;
+#endif
       uartSemaphor = 0;
     }
     else
@@ -802,9 +843,8 @@ void handleMqttCFG()
       mqtt_persistence = 1;
     else
       mqtt_persistence = 0;
+    alexaParam = alex[0];
 
-    unsigned long last = millis();
-    char uBuf[16];
     WriteEEP(broker, E_MQTT_BROKER);
     WriteEEP(port, E_MQTT_PORT);
     WriteEEP(dom[0], E_DOMOTICMODE);
@@ -813,15 +853,10 @@ void handleMqttCFG()
     WriteEEP(log[0], E_MQTT_LOG);
     WriteEEP(pers[0], E_MQTT_PERSISTENCE);
     WriteEEP(alex[0], E_ALEXA);
-    sprintf(uBuf, "in %d mS", (millis() - last)); 
-
     content = "{\"Success\":\"saved to eeprom ";
-    content += uBuf; 
-#ifdef COMMIT_RARE
-    content += " - NOT COMMITTED ";
-#else
+
+    WriteEEP((char*)&device_BUS_id[0], E_MQTT_TABDEVICES, (int) DEV_NR * E_MQTT_TABLEN);
     EEPROM.commit();
-#endif
     content += " ... please use .../reset?device=esp    to boot into new mqtt broker\"}";
     statusCode = 200;
   }
@@ -840,11 +875,12 @@ void handleMqttDevices()  // inizio processo di censimento automatico dei device
   {
     content = "{\"status\":\"OK - tab cleared...\"}";
     statusCode = 200;
-    for (int i = 0; i < 168; ++i)
+    for (int i = 0; i < DEV_NR; ++i)
     {
-      EEPROM.write(i + E_MQTT_TABDEVICES, 0);
       EEPROM.write((int) i * E_ALEXA_DESC_LEN + E_ALEXA_DESC_DEVICE, 0);
+	  device_BUS_id[i].Val = 0;
     }
+    WriteEEP((char) 0, (int) E_MQTT_TABDEVICES, (int) DEV_NR * E_MQTT_TABLEN);
     EEPROM.commit();
     requestBuffer[requestLen++] = '§';
     requestBuffer[requestLen++] = 'U';
@@ -886,7 +922,7 @@ void handleMqttDevices()  // inizio processo di censimento automatico dei device
       requestBuffer[requestLen++] = 'U';
       requestBuffer[requestLen++] = '2'; // fine censimento
       immediateSend();
-      delay(400);       // wait 400mS due to pic eeprom write
+      delay(500);       // wait 400mS due to pic eeprom write
 
       requestBuffer[requestLen++] = '§';
       requestBuffer[requestLen++] = DEVICEREQUEST;
@@ -906,6 +942,7 @@ void handleMqttDevices()  // inizio processo di censimento automatico dei device
        content = "{\"status\":\"OK - terminated...\"}";
        statusCode = 200;
        devIx = 0;
+       WriteEEP((char*)&device_BUS_id[0], E_MQTT_TABDEVICES, (int) DEV_NR * E_MQTT_TABLEN);
        EEPROM.commit();
        requestBuffer[requestLen++] = '§';
        requestBuffer[requestLen++] = 'U';
@@ -921,6 +958,7 @@ void handleMqttDevices()  // inizio processo di censimento automatico dei device
       content = "{\"status\":\"OK - stopped...\"}";
       statusCode = 200;
       devIx = 0;
+      WriteEEP((char*)&device_BUS_id[0], E_MQTT_TABDEVICES, (int) DEV_NR * E_MQTT_TABLEN);
       EEPROM.commit();
       requestBuffer[requestLen++] = '§';
       requestBuffer[requestLen++] = 'U';
@@ -936,24 +974,15 @@ void handleMqttDevices()  // inizio processo di censimento automatico dei device
         content += "<p><ol>";
         statusCode = 200;
 
-        char device;
         char devtype;
         char nomeDevice[6];
-        char sectorline = EEPROM.read(E_MQTT_TABDEVICES);
-
-        for (char devx = 1; devx < 168; devx++)
+        char devx = 1;
+        while ((devx < DEV_NR) && (device_BUS_id[devx].address))
         {
-          devtype = EEPROM.read(devx + E_MQTT_TABDEVICES);
+          devtype = device_BUS_id[devx].type;
           if ((devtype > 0) && (devtype < 32))
           {
-#ifdef SCS
-            device = MQTTnewdevice(devtype, devx);
-            sprintf(nomeDevice, "%02X  ", device);  // to
-#endif
-#ifdef KNX
-            device = MQTTnewdevice(devtype, sectorline, devx);
-            sprintf(nomeDevice, "%02X%02X  ", sectorline, device);  // to
-#endif
+            MQTTnewdevice(devx, nomeDevice);
             content += "<li>";
             content += nomeDevice;
             if (devtype == 1)
@@ -969,9 +998,12 @@ void handleMqttDevices()  // inizio processo di censimento automatico dei device
               content += "cover";
             else if (devtype == 9)
               content += "coverpct";
+            else if (devtype == 0x0E)
+              content += "alarm board";
 
             content += "</li>";
           }
+          devx++;
         }
         content += "</ol>";
         content += "</form></html>";
@@ -992,22 +1024,15 @@ void handleMqttDevices()  // inizio processo di censimento automatico dei device
         content += "<p><ol>";
         statusCode = 200;
 
-        char device;
         char devtype;
         char nomeDevice[6];
-//        char sectorline = EEPROM.read(E_MQTT_TABDEVICES);
-
-        for (char devx = 1; devx < 168; devx++)
+		char devx = 1;
+        while ((devx < DEV_NR) && (device_BUS_id[devx].address))
         {
-          devtype = EEPROM.read(devx + E_MQTT_TABDEVICES);
+          devtype = device_BUS_id[devx].type;
           if ((devtype > 0) && (devtype < 32))
           {
-#ifdef SCS
-            sprintf(nomeDevice, "%02X ", devx);  // to
-#endif
-#ifdef KNX
-            device = DeviceOfIx(devx, (char *) nomeDevice);
-#endif
+            DeviceOfIx(devx, (char *)nomeDevice);
             content += "<li>";
             content += nomeDevice;
             if (devtype == 1)
@@ -1021,13 +1046,18 @@ void handleMqttDevices()  // inizio processo di censimento automatico dei device
               content += "dimmer";
             else if (devtype == 8)
               content += "cover";
+            else if (devtype == 0x0E)
+              content += "alarm board";
             else if (devtype == 9)
             {
               content += "coverpct";
               requestBuffer[requestLen++] = '§';
               requestBuffer[requestLen++] = 'U';
               requestBuffer[requestLen++] = '6';
-              requestBuffer[requestLen++] = device;
+#ifdef KNX
+              requestBuffer[requestLen++] = device_BUS_id[devx].linesector;
+#endif
+              requestBuffer[requestLen++] = device_BUS_id[devx].address;
               immediateSend();
               char m = immediateReceive('[');
               if (m > 8)
@@ -1050,18 +1080,17 @@ void handleMqttDevices()  // inizio processo di censimento automatico dei device
                   n++;
                 }
               }
-            }
+            } // devtype = 9
 
             content += "  ";
-            String edesc = "";
-            edesc = ReadStream(&edesc[0], (int)E_ALEXA_DESC_DEVICE + (devx * E_ALEXA_DESC_LEN), E_ALEXA_DESC_LEN, 2); // tipo=0 binary array   1:ascii array   2:ascii string
-            content += edesc;
+            content += descrOfIx(devx);
             content += "</li>";
-          }
-        }
+          } // devtype > 0
+          devx++;
+        }  // while
         content += "</ol>";
         content += "</form></html>";
-      }
+      } // devIx == 0
       else
       {
         content = "{\"status\":\"waiting query 0x";
@@ -1083,12 +1112,11 @@ void handleMqttDevices()  // inizio processo di censimento automatico dei device
 void handleDeviceName()  // denominazione devices scoperti - per alexa
 {
   // denominazione manuale
-  char sectorline = EEPROM.read(E_MQTT_TABDEVICES);
   char device  = 0;
   char devtype = 0;
   char deviceX = 0;
   char nomeDevice[6];
-  char hBuffer[12];
+  char temp[32];
   char *ch;
   WORD_VAL maxp;
   
@@ -1097,9 +1125,13 @@ void handleDeviceName()  // denominazione devices scoperti - per alexa
   String EndMsg = "";
 
   nomeDevice[0] = 0;
-  hBuffer[0] = 0;
+  temp[0] = 0;
 
   if (firstTime == 0) setFirst();  // DEVONO essere attivi @MX  e @l
+
+
+
+  // -------------- manual update start -------------------
 
   if (server.hasArg("busid"))
   {
@@ -1112,14 +1144,12 @@ void handleDeviceName()  // denominazione devices scoperti - per alexa
     &&  (busid.length() > 3))
 #endif
     {
-      deviceX = ixOfDevice(&busid[0]);
-      device = DeviceOfIx(deviceX);
-      
-      if ((deviceX > 0) && (deviceX < 168))
+      deviceX = ixOfDeviceNew(&busid[0]);
+      if (deviceX > 0) 
       {
         if (server.hasArg("devname"))
         {
-          String edesc = ReadStream(&edesc[0], (int)E_ALEXA_DESC_DEVICE + (deviceX * E_ALEXA_DESC_LEN), E_ALEXA_DESC_LEN, 2); // tipo=0 binary array   1:ascii array   2:ascii string
+          String edesc = descrOfIx(deviceX);
           AlexaDescr = server.arg("devname");
           if (AlexaDescr != edesc)
           {
@@ -1127,12 +1157,8 @@ void handleDeviceName()  // denominazione devices scoperti - per alexa
             {
               fauxmo.renameDevice(&edesc[0], &AlexaDescr[0]);
             }
-             WriteEEP(AlexaDescr, (int) deviceX * E_ALEXA_DESC_LEN + E_ALEXA_DESC_DEVICE, E_ALEXA_DESC_LEN);
-#ifdef COMMIT_RARE
-            EndMsg = "<li>UPDATED !!!  - NOT COMMITTED</li>";
-#else
+            WriteDescrOfIx(AlexaDescr, deviceX);
             EndMsg = "<li>UPDATED !!!</li>";
-#endif
           }
         }
         if (server.hasArg("maxpos"))
@@ -1147,31 +1173,31 @@ void handleDeviceName()  // denominazione devices scoperti - per alexa
         {
           String stype = server.arg("type");
           char type = (char) stype.toInt();
-          devtype = EEPROM.read(deviceX + E_MQTT_TABDEVICES);
-//        if ((type > 0) && (type < 32) && (type != devtype))
+          if (type == 0) type = 1;
+          devtype = device_BUS_id[deviceX].type;
           if (type != devtype)
           {
-            WriteEEP(type, deviceX + E_MQTT_TABDEVICES);
+            device_BUS_id[deviceX].type = type;
             devtype = type;
-#ifdef COMMIT_RARE
-            EndMsg = "<li>UPDATED !!!  - NOT COMMITTED</li>";
-#else
             EndMsg = "<li>UPDATED !!!</li>";
-#endif
           }
         }
 
-#ifndef COMMIT_RARE
         if (EndMsg != "")
+        {
+            WriteEEP((char*)&device_BUS_id[0], E_MQTT_TABDEVICES, (int) DEV_NR * E_MQTT_TABLEN);
             EEPROM.commit();
-#endif
+        }
         AlexaDescr = "";
         if (devtype == 9)
         {
           requestBuffer[requestLen++] = '§';
           requestBuffer[requestLen++] = 'U';
           requestBuffer[requestLen++] = '8';
-          requestBuffer[requestLen++] = device;     // device id
+#ifdef KNX
+          requestBuffer[requestLen++] = device_BUS_id[deviceX].linesector;     // device id
+#endif
+          requestBuffer[requestLen++] = device_BUS_id[deviceX].address;     // device id
           requestBuffer[requestLen++] = devtype;    // device type
           requestBuffer[requestLen++] = maxp.byte.HB;    // max position H
           requestBuffer[requestLen++] = maxp.byte.LB;    // max position L
@@ -1179,24 +1205,25 @@ void handleDeviceName()  // denominazione devices scoperti - per alexa
           devtype = 0;
           immediateReceive('k');
         } // devtype == 9
-      } // ((deviceX > 0) && (devAddress < 168))
+      } // ((deviceX > 0) && (devAddress < DEV_NR))
     } // (server.hasArg("busid"))
   } // (busid != "")
   
   
   // -------------- end of update -------------------
   
-  do
-  {
-    deviceX++;
-    devtype = EEPROM.read(deviceX + E_MQTT_TABDEVICES);
-  }   while (((devtype <= 0) || (devtype > 31)) && (deviceX != 168));
-  if (deviceX >= 168)  devtype=0;
+  
+  deviceX++;
+//  if (device_BUS_id[deviceX].address == 0)
+//      deviceX = 1;
+  devtype = device_BUS_id[deviceX].type;
+  
+  if ((deviceX >= DEV_NR)  || (device_BUS_id[deviceX].address == 0)) devtype=0;
 
-  if ((devtype > 0) && (devtype < 32))
+  if (device_BUS_id[deviceX].address > 0)
   {
     device = DeviceOfIx(deviceX, nomeDevice);
-    AlexaDescr = ReadStream(&AlexaDescr[0], (int) deviceX * E_ALEXA_DESC_LEN + E_ALEXA_DESC_DEVICE, E_ALEXA_DESC_LEN, 2); // tipo=0 binary array   1:ascii array   2:ascii string
+    AlexaDescr = descrOfIx(deviceX);
     if (devtype == 1)
       TypeDescr = "1 switch";
     else if (devtype == 2)
@@ -1207,23 +1234,28 @@ void handleDeviceName()  // denominazione devices scoperti - per alexa
       TypeDescr = "4 dimmer";
     else if (devtype == 8)
       TypeDescr = "8 cover";
+    else if (devtype == 0x0E)
+      TypeDescr = "E alarm board";
     else if (devtype == 9)
     {
       TypeDescr = "9 coverpct";
       requestBuffer[requestLen++] = '§';
       requestBuffer[requestLen++] = 'U';
       requestBuffer[requestLen++] = '6';
-      requestBuffer[requestLen++] = device;
+#ifdef KNX
+      requestBuffer[requestLen++] = device_BUS_id[deviceX].linesector;
+#endif
+      requestBuffer[requestLen++] = device_BUS_id[deviceX].address;
       immediateSend();
       char m = immediateReceive('[');
       //    replyBuffer[1], replyBuffer[2]  -  maxposition H-L
       if (m > 8)
       {
         int c = replyBuffer[2] | replyBuffer[1] << 8;
-        sprintf(hBuffer, "%d", c);
+        sprintf(temp, "%d", c);
       }
       else
-        sprintf(hBuffer, "nul");
+        sprintf(temp, "nul");
     }
     else
       TypeDescr = String((char)devtype,10);
@@ -1245,7 +1277,7 @@ void handleDeviceName()  // denominazione devices scoperti - per alexa
   content += "' style='width:80px'> ";
 
   content += "<label> max position (0,1 sec):</label><input name='maxpos' maxlength=6 value='";
-  content += hBuffer;
+  content += temp;
   content += "' style='width:45px'>";
 
   content += "<label> name:</label><input name='devname' maxlength=20 value='";
@@ -1254,25 +1286,18 @@ void handleDeviceName()  // denominazione devices scoperti - per alexa
 
   content += "<label> alexa ref.:</label><input name='alexaind' maxlength=3 value='";
 
+
 //  content += ...............    da fauxmo.addDevice
-  unsigned char idalex = 0;
-  char found = 0;
+
   char sAlex[4];
-  while ((idalex <= id_fauxmo) && (found == 0))
+  if (device_BUS_id[deviceX].alexa_id)
   {
-    if (alexa_BUS_id[idalex] == device)
-    {
-      found = 1;
-      sprintf(sAlex, "%d", idalex);  // to
-    }
-    else
-      idalex++;
-  }
-  if (found)
+    sprintf(sAlex, "%d", device_BUS_id[deviceX].alexa_id);
     content += sAlex;
+  }
   else
     content += "no";
-  
+    
   content += "' style='width:40px'>";
 
   content += "<input type='submit'>";
@@ -1280,13 +1305,12 @@ void handleDeviceName()  // denominazione devices scoperti - per alexa
 
   if ((devtype <= 0) || (devtype > 31))
   {
-    content += "<li>END OF discovered device";
-#ifdef COMMIT_RARE
-    content += " - changes COMMITTED";
-#endif
+    sprintf(temp, "<li>END OF %d discovered devices</li>", deviceX);
+    content += temp;
     content += "</li>";
     device = 0;
     deviceX = 0;
+    WriteEEP((char*)&device_BUS_id[0], E_MQTT_TABDEVICES, (int) DEV_NR * E_MQTT_TABLEN);
     EEPROM.commit();
   }
   content += "</form> </html>";
@@ -1375,7 +1399,7 @@ void handleClear()
   content = "<!DOCTYPE HTML>\r\n<html>";
   content += "<p>Clearing the EEPROM - reboot.</p></html>";
   server.send(200, "text/html", content);
-  for (int i = 0; i < 1024; ++i) {
+  for (int i = 0; i < 4096; ++i) {
     EEPROM.write(i, 0);
   }
   EEPROM.commit();
@@ -1408,6 +1432,7 @@ void handleBackSetting()
   server.send(statusCode, "application/json", content);
 }
 // =============================================================================================
+#ifdef MQTTLOG
 void WriteLog(const char *msgLog)
 {
   char Log[250];
@@ -1420,18 +1445,21 @@ void WriteLog(String msgLog)
   snprintf_P(Log, sizeof(Log), "%lu - %s", millis(), msgLog.c_str());
   client.publish(_MODO "LOG", Log, 0);
 }
+#endif
 // =============================================================================================
 void WriteError(const char *msgLog)
 {
   char Log[250];
   snprintf_P(Log, sizeof(Log), "%lu - %s", millis(), msgLog);
-  client.publish(_MODO "ERROR", Log, 0);
+  if (mqttopen == 3)
+    client.publish(_MODO "ERROR", Log, 0);
 }
 void WriteError(String msgLog)
 {
   char Log[250];
   snprintf_P(Log, sizeof(Log), "%lu - %s", millis(), msgLog.c_str());
-  client.publish(_MODO "ERROR", Log, 0);
+  if (mqttopen == 3)
+    client.publish(_MODO "ERROR", Log, 0);
 }
 // =============================================================================================
 char reconnect()
@@ -1481,8 +1509,6 @@ void MqttCallback(char* topic, byte* payload, unsigned int length)
   unsigned char reply = 0;
   unsigned char command = 0xFF;
   String rtopic;
-
-
 
 
   // create character buffer with ending null terminator (string)
@@ -1736,12 +1762,14 @@ void MqttCallback(char* topic, byte* payload, unsigned int length)
 #endif
         }
   // ----------------------------------------------------------------------------------------------
+#ifdef MQTTLOG
         else if (mqtt_log == 'y')
         {
           char log[250];
           sprintf(log, "UNKNOWN topic pct-len: %d paylen: %d", (sizeof(COVERPCT_SET) - 1), length);
           WriteLog(log);
         }
+#endif 
   // ----------------------------------------------------------------------------------------------
 
 
@@ -1783,6 +1811,7 @@ void MqttCallback(char* topic, byte* payload, unsigned int length)
       requestBuffer[requestLen++] = device;		// to   device
 #endif
 #ifdef KNX
+      requestBuffer[requestLen++] = highByte(device); // to   device
       requestBuffer[requestLen++] = lowByte(device); // to   device
 #endif
       requestBuffer[requestLen++] = command;    // command (%)
@@ -1792,6 +1821,7 @@ void MqttCallback(char* topic, byte* payload, unsigned int length)
     {
       requestBuffer[requestLen++] = '§';
       requestBuffer[requestLen++] = 'm';
+      requestBuffer[requestLen++] = highByte(device); // to   device
       requestBuffer[requestLen++] = lowByte(device); // to   device
       requestBuffer[requestLen++] = command;    // command (%)
     }
@@ -1823,9 +1853,8 @@ void MqttCallback(char* topic, byte* payload, unsigned int length)
 void handleReset()
 {
   // ?device= <esp>|<pic>|<mqtt>
-#ifdef COMMIT_RARE
+  WriteEEP((char*)&device_BUS_id[0], E_MQTT_TABDEVICES, (int) DEV_NR * E_MQTT_TABLEN);
   EEPROM.commit();
-#endif
 
   String param = server.arg("device");
 
@@ -2012,10 +2041,10 @@ void handleStatus()
     char devNr = 0;
     char nomeDevice[6];
     char device;
-    char sectorline = EEPROM.read(E_MQTT_TABDEVICES);
-    for (char devx = 1; devx < 168; devx++)
+    char devx = 1;
+    while ((devx < DEV_NR) && (device_BUS_id[devx].address))
     {
-      devtype = EEPROM.read(devx + E_MQTT_TABDEVICES);
+      devtype = device_BUS_id[devx].type;
       if ((devtype > 0) && (devtype < 32))
       {
         devNr++;
@@ -2023,6 +2052,7 @@ void handleStatus()
         content += nomeDevice;
         content += " ";
       }
+      devx++;
     }
     content += "</li>";
   }
@@ -2111,17 +2141,24 @@ void WriteEEP(char stream, int eeaddress)
 {
    EEPROM.write(eeaddress, stream);
 }
-
+// -----------------------------------------------------------------------------------------------------------------------------------------------
+void WriteEEP(char stream, int eeaddress, int len)
+{
+	while (len--)
+	{
+	   EEPROM.write(eeaddress++, stream);
+	}
+}
 // -----------------------------------------------------------------------------------------------------------------------------------------------
 void WriteEEP(char * stream, int eeaddress, int len)
 {
   unsigned char eof = 0;
-  while ((len) && (eof == 0))
+  while (len) // ((len) && (eof == 0))
   {
     EEPROM.write(eeaddress, *stream);
     eeaddress++;
-    if (*stream == 0)
-      eof = 1;
+//    if (*stream == 0)
+//      eof = 1;
     stream++;
     len--;
   }
@@ -2154,6 +2191,12 @@ void WriteEEP(String stream, int eeaddress, int maxlen)
     xs++;
   }
 }
+// -----------------------------------------------------------------------------------------------------------------------------------------------
+char ReadStream(int eeaddress)
+{
+  return EEPROM.read(eeaddress);
+}
+
 // -----------------------------------------------------------------------------------------------------------------------------------------------
 String ReadStream(char * stream, int eeaddress, int len, unsigned char tipo) // tipo=0 binary array   1:ascii array   2:ascii string
 {
@@ -2189,44 +2232,27 @@ String ReadStream(char * stream, int eeaddress, int len, unsigned char tipo) // 
 }
 
 // -----------------------------------------------------------------------------------------------------------------------------------------------
-#ifdef KNX
-char  MQTTnewdevice(char devtype, char sectorline, char devname)  // KNX
+char  MQTTnewdevice(char devIx, char* nomedevice)  // KNX
 {
-  char edesc[25];
-  char addrdevice[5];
-  ReadStream(edesc, (int)E_ALEXA_DESC_DEVICE + (devname * E_ALEXA_DESC_LEN), E_ALEXA_DESC_LEN, 1); // tipo=0 binary array   1:ascii array   2:ascii string
-  DeviceOfIx(sectorline, devname, addrdevice);  
-  if (mqttopen == 3)
-  {
-    if ((edesc[0] == 0) || (edesc[0] == 0xFF))
-      MQTTnewdiscover(devtype, addrdevice, addrdevice);
-    else
-      MQTTnewdiscover(devtype, addrdevice, edesc);
-  }
-  return devname;
-}
-#endif
-// -----------------------------------------------------------------------------------------------------------------------------------------------
-#ifdef SCS
-char  MQTTnewdevice(char devtype, char devname)   // SCS
-{
-  char edesc[25];
-  char addrdevice[3];
-  ReadStream(edesc, (int)E_ALEXA_DESC_DEVICE + (devname * E_ALEXA_DESC_LEN), E_ALEXA_DESC_LEN, 1); // tipo=0 binary array   1:ascii array   2:ascii string
+// DEVADDR device_BUS_id[DEV_NR]; // pointer: eventuale id alexa - contenuto: device address reale (scs o knx) e tipo
 
-  DeviceOfIx(devname, addrdevice);  
+  char devicename[6];
+  DeviceOfIx(devIx, devicename);
+
+  if (nomedevice) memcpy(nomedevice,devicename,6);
+
+  String edesc = descrOfIx(devIx);
   if (mqttopen == 3)
   {
-    if ((edesc[0] == 0) || (edesc[0] == 0xFF))
-      MQTTnewdiscover(devtype, addrdevice, addrdevice);
+    if ((edesc[0] == 0) || (edesc[0] == 0xFF) || (edesc == ""))
+      MQTTnewdiscover(device_BUS_id[devIx].type, devicename, devicename);
     else
-      MQTTnewdiscover(devtype, addrdevice, edesc);
+      MQTTnewdiscover(device_BUS_id[devIx].type, devicename, edesc);
   }
-  return devname;
+  return devIx;
 }
-#endif
 // -----------------------------------------------------------------------------------------------------------------------------------------------
-char  MQTTnewdiscover(char devtype, char * addrDevice, char * nomeDevice)
+char  MQTTnewdiscover(char devtype, char * addrDevice, String nomeDevice)
 {
   char rc = 0;
   String topic;
@@ -2299,6 +2325,9 @@ char  MQTTnewdiscover(char devtype, char * addrDevice, char * nomeDevice)
     payload += addrDevice;
     payload += NEW_DEVICE_END;
   }
+  else if (devtype == 0x0E) // D=define new device ALARM BOARD<<<-----------------------------------------------
+  {
+  }
   if (rc == 1)
   {
     const char* cPayload = payload.c_str();
@@ -2339,11 +2368,22 @@ void immediateSend(void)
       sprintf(logCh, "%02X ", requestBuffer[s]);
       log += logCh;
 #else
+#ifdef MQTTLOG
       if (mqtt_log == 'y')
       {
         sprintf(logCh, "%02X ", requestBuffer[s]);
         log += logCh;
       }
+#endif
+#endif
+#ifdef USE_TCPSERVER
+#ifdef DEBUG_FAUXMO_TCP         
+      if (tcpuart == 2) 
+      {
+        sprintf(logCh, "%02X ", requestBuffer[s]);
+        log += logCh;
+      }
+#endif
 #endif
       delayMicroseconds(OUTERWAIT);
       s++;
@@ -2351,7 +2391,19 @@ void immediateSend(void)
 #ifdef DEBUG
     Serial.println("\r\n" + log);
 #else
+#ifdef MQTTLOG
     if (mqtt_log == 'y') WriteLog(log);
+#endif
+#endif
+
+#ifdef USE_TCPSERVER
+#ifdef DEBUG_FAUXMO_TCP         
+        if ((tcpuart == 2) && (tcpclient) && (tcpclient.connected())) 
+        {
+          tcpclient.write((char*)&log[0], log.length());
+          tcpclient.flush(); 
+        }
+#endif
 #endif
     requestLen = 0;
     uartSemaphor = 0;
@@ -2387,12 +2439,13 @@ char immediateReceive(char firstChar)
       while (Serial.available() && (replyLen < 255))
       {
         replyBuffer[replyLen] = Serial.read();        // receive from serial USB
+#ifdef MQTTLOG
         if (mqtt_log == 'y')
         {
           sprintf(logCh, "%02X ", replyBuffer[replyLen]);
           log += logCh;
         }
-        
+#endif        
 #ifdef USE_TCPSERVER
   #ifdef DEBUG_FAUXMO_TCP         
         if (tcpuart == 2)  
@@ -2416,7 +2469,9 @@ char immediateReceive(char firstChar)
         wait++;
       }
     }
+#ifdef MQTTLOG
     if ((mqtt_log == 'y') && (replyLen > 0)) WriteLog(log);
+#endif
 #ifdef USE_TCPSERVER
   #ifdef DEBUG_FAUXMO_TCP         
     if ((tcpuart == 2) && (tcpclient) && (tcpclient.connected())) 
@@ -2435,6 +2490,7 @@ char immediateReceive(char firstChar)
 #ifdef DEBUG
 void manualInput(char prefix)
 {
+/*
   switch (prefix)
   {
     case 'O':
@@ -2454,6 +2510,7 @@ void manualInput(char prefix)
       EEPROM.commit();
       break;
   }
+*/
 }
 #endif
 // =====================================================================================================
@@ -2495,7 +2552,7 @@ void setup() {
   Serial.println();
   Serial.println("Startup");
 
-  Serial.println("Press  A for start as AP,  E for eeprom init,  W for eeprom test,  S for eeprom speed");
+  Serial.println("Press  A for start as AP,  E for eeprom init,  S for search speed");
   Serial.setTimeout(5000);
   char serin[4];
   Serial.readBytes(serin, 1);
@@ -2504,7 +2561,7 @@ void setup() {
   if (serin[0] == 'E')
   {
     int we = 0;
-    while (we < 1024)
+    while (we < 4096)
     {
       EEPROM.write(we, 0);
       we++;
@@ -2514,59 +2571,54 @@ void setup() {
     forceAP = 1;
     Serial.println("Forced AP mode");
   }
-  if (serin[0] == 'W')
+
+/*
+  if (serin[0] == 'S')
   {
-    String stst = "Test di scrittura EEPROM - address = 3930";
-    Serial.println(stst);
-    char rtst[50];
-    WriteEEP(stst, 3930); 
-    EEPROM.commit();
-    ReadStream(rtst, 3930, 50, 1);  // tipo=0 binary   1:ascii    2:string
-    if (rtst[0] == stst[0])
-      Serial.println(rtst);
-    else
+    int32_t time1;
+//  char ixOfDevice(DEVADDR device)
+//    unsigned long last = millis();
+     
+    DEVADDR dtest;
+    dtest.linesector = 0x44;
+    dtest.address = 0x55;
+
+    char xa = 0;
+    while (xa < DEV_NR)
     {
-      Serial.println("FAILED ");
-      Serial.printf(" %02X %02X %02X %02X ...", rtst[0], rtst[1], rtst[2], rtst[3]);
+      device_BUS_id[xa].linesector = 11;
+      device_BUS_id[xa].address = 22;
+      device_BUS_id[xa].type = 1;
+      xa++;
     }
+    // test search table speed with ixofdevices()
+    time1 = asm_ccount();
+    int nts = 0;
+    int lups =0;
+    char tst;
+    while (nts < 1000)
+    {
+      tst = ixOfDevice((DEVADDR)dtest);
+      nts++;
+    }
+    int32_t time2;
+    lups = nts;
+    time2 = asm_ccount();
+//    Serial.printf("\r\n- table search (1000 devcs): %d mS\r\n", (millis() - last)); // 
+    Serial.printf("\r\n- table search (%d devcs): %d tcks\r\n", lups, time2 - time1); //     
+    Serial.printf(" - %d uS\r\n", (time2 - time1)/80); //     
+    time2 = asm_ccount();
+    Serial.printf("\r\n- table search (%d devcs): %d tcks\r\n", lups, time2 - time1); //     
+    Serial.printf(" - %d uS\r\n", (time2 - time1)/80); //     
   }
+*/
+
+
   if ((serin[0] == 'A') || (serin[0] == 'a'))
   {
     forceAP = 1;
     Serial.println("Forced AP mode");
   }
-
-  if (serin[0] == 'S')
-  {
-    // test eeprom speed with readstream (EEPROM.read loop)
-    unsigned long last = millis();
-    int nt = 0;
-    char tst;
-    while (nt < 1024)
-    {
-      ReadStream((char *) &tst, nt, 1, 1);  // tipo=0 binary   1:ascii
-      nt++;
-    }
-    Serial.printf("\r\n- eeprom read 1k: %d mS", (millis() - last)); // 48mS
-
-
-    // test eeprom read-write with readstream-writestream
-    last = millis();
-    nt = 0;
-    while (nt < 1024)
-    {
-      ReadStream((char *) &tst, nt, 1, 1);  // tipo=0 binary   1:ascii
-      WriteEEP(tst, nt);
-//    EEPROM.write(nt, tst);
-      nt++;
-    }
-    Serial.printf("\r\n- eeprom write 1k: %d mS", (millis() - last));
-
-    last = millis();
-    EEPROM.commit();
-    Serial.printf("\r\n- eeprom commit 1k: %d mS\r\n", (millis() - last));
-  }
-
 
   // read eeprom for ssid and pass
   Serial.print("Read EEPROM ssid: ");
@@ -2612,7 +2664,7 @@ void setup() {
   Serial.println(mqtt_port);
 #endif
 
-  ReadStream((char *) &domoticMode, E_DOMOTICMODE, 1, 1);  // tipo=0 binary   1:ascii
+  domoticMode = ReadStream(E_DOMOTICMODE);
 #ifdef DEBUG
   Serial.print("domoticMode=");
   Serial.println(domoticMode);
@@ -2630,13 +2682,13 @@ void setup() {
   Serial.println(mqtt_password);
 #endif
 
-  ReadStream((char *) &mqtt_log, E_MQTT_LOG, 1, 1);  // tipo=0 binary   1:ascii
+  mqtt_log = ReadStream(E_MQTT_LOG);
 #ifdef DEBUG
   Serial.print("log=");
   Serial.println(mqtt_log);
 #endif
 
-  ReadStream((char *) &alexaParam, E_ALEXA, 1, 1);  // tipo=0 binary   1:ascii
+  alexaParam = ReadStream(E_ALEXA);
 #ifdef DEBUG
   Serial.print("alexa=");
   Serial.println(alexaParam);
@@ -2648,7 +2700,7 @@ void setup() {
     http_port = 8080;  // 8080
   }
 
-  ReadStream((char *) &mqtt_persistence, E_MQTT_PERSISTENCE, 1, 1);  // tipo=0 binary   1:ascii
+  mqtt_persistence = ReadStream(E_MQTT_PERSISTENCE);
   if (mqtt_persistence == 'y')
     mqtt_persistence = 1;
   else
@@ -2658,6 +2710,8 @@ void setup() {
   Serial.print("pers=");
   Serial.println(mqtt_persistence);
 #endif
+
+  ReadStream((char*)&device_BUS_id[0], E_MQTT_TABDEVICES, (int) DEV_NR * E_MQTT_TABLEN, 0);  // tipo=0 binary   1:ascii
 
 
   Serial.write('@');    // set led lamps
@@ -2811,25 +2865,24 @@ void setup() {
         id_interfaccia_scs_knx = fauxmo.addDevice(ID_MY, 0);
         
         char devtype;
-        char devx;
-        for (devx = 1; devx < 168; devx++)
+        char devx = 1;
+        while ((devx < DEV_NR) && (device_BUS_id[devx].address))
         {
-          devtype = EEPROM.read(devx + E_MQTT_TABDEVICES);
+          devtype = device_BUS_id[devx].type;
           if ((devtype > 0) && (devtype < 32))
           {
-            String edesc = "";
-            edesc = ReadStream(&edesc[0], (int)E_ALEXA_DESC_DEVICE + (devx * E_ALEXA_DESC_LEN), E_ALEXA_DESC_LEN, 2); // tipo=0 binary array   1:ascii array   2:ascii string
-            
+            String edesc = descrOfIx(devx);
             if ((edesc != "") && (edesc[0] > ' '))
             {
               if (devtype == 9)
                 id_fauxmo = fauxmo.addDevice(&edesc[0], 1);
               else
                 id_fauxmo = fauxmo.addDevice(&edesc[0], 128);
-
-//            alexa_BUS_id[id_fauxmo] = devx;  // index: device id alexa max 168 devices    data: ID bus pointer
-              alexa_BUS_id[id_fauxmo] = DeviceOfIx(devx);  // index: device id alexa max 168 devices    data: ID bus reale
+                
+              alexa_BUS_ix[id_fauxmo] = devx;  // index: device id alexa max DEV_NR devices    data: ID bus reale
+              device_BUS_id[devx].alexa_id = id_fauxmo; 
             }
+            devx++;
           }
         }
         // ----------------------------------------------------------------------------------------------------
@@ -2908,12 +2961,16 @@ void setup() {
           }
           else // an scs/knx device
           {
-            char device = alexa_BUS_id[alexa_id];
-            char devix = ixOfDevice(device);
-            char devtype = EEPROM.read(devix + E_MQTT_TABDEVICES);
+            char devix = alexa_BUS_ix[alexa_id];
+            char devtype = device_BUS_id[devix].type;
+//          char device = alexa_BUS_id[alexa_id];
             
 #ifdef DEBUG
-            Serial.printf("\r\n-       device " _MODO " %02X - type: %02X ", device, devtype);
+#ifdef SCS
+            Serial.printf("\r\n-       device " _MODO " %02X - type: %02X ", device_BUS_id[devix].address, devtype);
+#else
+            Serial.printf("\r\n-       device " _MODO " %02X%02X - type: %02X ", device_BUS_id[devix].linesector, device_BUS_id[devix].address, devtype);
+#endif
 #endif
 
             // If your device state is changed by any other means (MQTT, physical button,...)
@@ -2923,9 +2980,12 @@ void setup() {
             {
               if (firstTime == 0) setFirst();  // DEVONO essere attivi @MX  e @l
               unsigned char command;
-              char linesector;
               int pct;
               char stato = fauxmo.getState(alexa_id);
+              char device = device_BUS_id[devix].address;
+#ifdef KNX
+              char linesector = device_BUS_id[devix].linesector;
+#endif
               switch (devtype)
               {
                 // --------------------------------------- SWITCHES -------------------------------------------
@@ -2966,11 +3026,10 @@ void setup() {
 
 #ifdef SCS
 // comando §y<destaddress><source><type><command>
-                  serObuffer[bufNr][serOlen[bufNr]++] = device;     // to   device address
+                  serObuffer[bufNr][serOlen[bufNr]++] = device_BUS_id[devix].address;     // to   device address
                   serObuffer[bufNr][serOlen[bufNr]++] = 0x00;       // from device
                   serObuffer[bufNr][serOlen[bufNr]++] = 0x12;       // command type
 #endif
-
                   serObuffer[bufNr][serOlen[bufNr]++] = command;    // command char
                   break;
 
@@ -3017,7 +3076,6 @@ void setup() {
                   break;
 
 
-
                 case 4:
 #ifdef KNX //  dimmer  KNX
                   // --------------------------------------- LIGHTS DIMM ------------------------------------------
@@ -3032,8 +3090,8 @@ void setup() {
                     command = (alexacommand & 1) | 0x80;
                     serObuffer[bufNr][serOlen[bufNr]++] = '§';
                     serObuffer[bufNr][serOlen[bufNr]++] = 'y';
+                    
                   // comando §y<source><linesector><destaddress><command>
-                    linesector = EEPROM.read(E_MQTT_TABDEVICES);
                     serObuffer[bufNr][serOlen[bufNr]++] = 0x01;       // from device
                     serObuffer[bufNr][serOlen[bufNr]++] = linesector; // to   device line-sector
                     serObuffer[bufNr][serOlen[bufNr]++] = device;     // to   device address
@@ -3044,6 +3102,7 @@ void setup() {
                   {
                     serObuffer[bufNr][serOlen[bufNr]++] = '§';
                     serObuffer[bufNr][serOlen[bufNr]++] = 'm';
+                    serObuffer[bufNr][serOlen[bufNr]++] = linesector; // to   device line-sector
                     serObuffer[bufNr][serOlen[bufNr]++] = device;     // to   device address
                     serObuffer[bufNr][serOlen[bufNr]++] = pct;        // %
                   }
@@ -3140,6 +3199,9 @@ void setup() {
 
                   serObuffer[bufNr][serOlen[bufNr]++] = '§';
                   serObuffer[bufNr][serOlen[bufNr]++] = 'u';
+#ifdef KNX
+                  serObuffer[bufNr][serOlen[bufNr]++] = linesector; // to   device line-sector
+#endif
                   serObuffer[bufNr][serOlen[bufNr]++] = device;     // to   device address
                   serObuffer[bufNr][serOlen[bufNr]++] = command;        // %
                   break;
@@ -3237,9 +3299,8 @@ void setup() {
         immediateSend();
 
         ArduinoOTAflag = 1;
-#ifdef COMMIT_RARE
+        WriteEEP((char*)&device_BUS_id[0], E_MQTT_TABDEVICES, (int) DEV_NR * E_MQTT_TABLEN);
         EEPROM.commit();
-#endif
       });
 
       ArduinoOTA.onEnd([]() {
@@ -3374,7 +3435,6 @@ void loop() {
     char nomeDevice[6];
     char AlexaDescr[21];
 
-
     // client input processing
     while (tcpclient.available())
     {
@@ -3398,7 +3458,9 @@ void loop() {
     {
       String busid = tcpJarg(tcpBuffer,"\"device\""); // bus id
       deviceX = ixOfDevice(&busid[0]);
-      device = DeviceOfIx(deviceX);
+      linesector = device_BUS_id[deviceX].linesector;
+      device = device_BUS_id[deviceX].address;
+      devtype = device_BUS_id[deviceX].type;
       
       String sreq = tcpJarg(tcpBuffer,"\"request\""); // on-off-up-down-stop-nn%
       String scmd = tcpJarg(tcpBuffer,"\"command\""); // 0xnn
@@ -3411,7 +3473,6 @@ void loop() {
 
 #ifdef KNX
 // comando §y<source><linesector><destaddress><command>
-        linesector = EEPROM.read(E_MQTT_TABDEVICES);
         requestBuffer[requestLen++] = 0x01;   // from device
         requestBuffer[requestLen++] = linesector; // to   device line-sector
         requestBuffer[requestLen++] = device; // to   device address
@@ -3435,25 +3496,27 @@ void loop() {
       if (busid != "")
       {
         busid += "  ";
-        deviceX = ixOfDevice(&busid[0]);
-        device = DeviceOfIx(deviceX);
-        if ((busid != "") && (deviceX > 0) && (deviceX < 168))
+        deviceX = ixOfDeviceNew(&busid[0]);
+        linesector = device_BUS_id[deviceX].linesector;
+        device = device_BUS_id[deviceX].address;
+//      devtype = device_BUS_id[deviceX].type;
+
+        if (deviceX)
         {
           String alexadescr = tcpJarg(tcpBuffer,"\"descr\"");
           alexadescr.toCharArray(AlexaDescr, 21);  
 
           if (alexaParam == 'y' )
           {
-            String edesc = ReadStream(&edesc[0], (int)E_ALEXA_DESC_DEVICE + (deviceX * E_ALEXA_DESC_LEN), E_ALEXA_DESC_LEN, 2); // tipo=0 binary array   1:ascii array   2:ascii string
+            String edesc = descrOfIx(deviceX);
             fauxmo.renameDevice(&edesc[0], &alexadescr[0]);
           }
-          
-          WriteEEP(AlexaDescr, (int) deviceX * E_ALEXA_DESC_LEN + E_ALEXA_DESC_DEVICE, E_ALEXA_DESC_LEN);
+          WriteDescrOfIx(AlexaDescr, deviceX);
         
           String stype = tcpJarg(tcpBuffer,"\"type\"");
           devtype = (char) stype.toInt();
-//        if ((devtype > 0) && (devtype < 32))
-             WriteEEP(devtype, deviceX + E_MQTT_TABDEVICES);
+          device_BUS_id[deviceX].type = devtype;
+             
           String smaxpos = tcpJarg(tcpBuffer,"\"maxp\"");
           if (devtype == 9)
           {
@@ -3462,6 +3525,9 @@ void loop() {
             requestBuffer[requestLen++] = '§';
             requestBuffer[requestLen++] = 'U';
             requestBuffer[requestLen++] = '8';
+#ifdef KNX
+            requestBuffer[requestLen++] = linesector;
+#endif
             requestBuffer[requestLen++] = device;     // device id
             requestBuffer[requestLen++] = devtype;    // device type
             requestBuffer[requestLen++] = maxp.byte.HB;    // max position H
@@ -3492,6 +3558,7 @@ void loop() {
       buflen = 0;
       while (tcpBuffer[buflen]) buflen++;
       tcpclient.write(tcpBuffer, buflen);
+      WriteEEP((char*)&device_BUS_id[0], E_MQTT_TABDEVICES, (int) DEV_NR * E_MQTT_TABLEN);
       EEPROM.commit();
       tcpclient.flush();
     }	// #putdevice
@@ -3501,19 +3568,24 @@ void loop() {
 // ------------------------------------------------------------------------------------------------------
     {
       deviceX = 1;
-      while (deviceX < 168)
+      while (device_BUS_id[deviceX].address)
       {
-        devtype = EEPROM.read(deviceX + E_MQTT_TABDEVICES);
-        if ((devtype > 0) && (devtype < 32))
+        devtype = device_BUS_id[deviceX].type;
+        if (device_BUS_id[deviceX].address)
         {
+          linesector = device_BUS_id[deviceX].linesector;
           device = DeviceOfIx(deviceX, nomeDevice);
-          ReadStream(&AlexaDescr[0], (int) deviceX * E_ALEXA_DESC_LEN + E_ALEXA_DESC_DEVICE, E_ALEXA_DESC_LEN, 1); // tipo=0 binary array   1:ascii array   2:ascii string
+          String alexadescr = descrOfIx(deviceX);
+          alexadescr.toCharArray(AlexaDescr, 21);  
           maxp.Val = 0;
           if (devtype == 9)
           {
             requestBuffer[requestLen++] = '§';
             requestBuffer[requestLen++] = 'U';
             requestBuffer[requestLen++] = '6';
+#ifdef KNX
+            requestBuffer[requestLen++] = linesector;
+#endif
             requestBuffer[requestLen++] = device;
             immediateSend();
             char m = immediateReceive('[');
@@ -3531,7 +3603,7 @@ void loop() {
           tcpclient.flush();
         } // devtype > 0
         deviceX++;
-      } // while devicex < 168
+      } // while devicex < DEV_NR
      
       sprintf(tcpBuffer, "#eof");
       buflen = 0;
@@ -3549,29 +3621,40 @@ void loop() {
       String busid = tcpJarg(tcpBuffer,"\"device\"");
       if (busid != "")
       {
+//      deviceX = (char) busid.toInt();
         deviceX = ixOfDevice(&busid[0]);
       }
       else
       busid = tcpJarg(tcpBuffer,"\"afterdev\"");
       if (busid != "")
       {
+//      deviceX = (char) busid.toInt();
         deviceX = ixOfDevice(&busid[0]);
         deviceX++;
       }
-      char sendOk = 0;
-      while ((deviceX < 168) && (sendOk == 0))
+      else
+      busid = tcpJarg(tcpBuffer,"\"devnum\"");
+      if (busid != "")
       {
-        devtype = EEPROM.read(deviceX + E_MQTT_TABDEVICES);
-        if ((devtype > 0) && (devtype < 32))
-        {
+        deviceX = (char) busid.toInt();
+      }
+
+      devtype = device_BUS_id[deviceX].type;
+      if (device_BUS_id[deviceX].address)
+      {
+          linesector = device_BUS_id[deviceX].linesector;
           device = DeviceOfIx(deviceX, nomeDevice);
-          ReadStream(&AlexaDescr[0], (int) deviceX * E_ALEXA_DESC_LEN + E_ALEXA_DESC_DEVICE, E_ALEXA_DESC_LEN, 1); // tipo=0 binary array   1:ascii array   2:ascii string
+          String alexadescr = descrOfIx(deviceX);
+          alexadescr.toCharArray(AlexaDescr, 21);  
           maxp.Val = 0;
           if (devtype == 9)
           {
             requestBuffer[requestLen++] = '§';
             requestBuffer[requestLen++] = 'U';
             requestBuffer[requestLen++] = '6';
+#ifdef KNX
+            requestBuffer[requestLen++] = linesector;
+#endif
             requestBuffer[requestLen++] = device;
             immediateSend();
             char m = immediateReceive('[');
@@ -3587,12 +3670,8 @@ void loop() {
           while (tcpBuffer[buflen]) buflen++;
           tcpclient.write(tcpBuffer, buflen);
           tcpclient.flush();
-          sendOk = 1;
-        } // devtype > 0
-        deviceX++;
-      } // while ((deviceX < 168) && (sendOk == 0))
-     
-      if (sendOk == 0)
+      } // devtype > 0
+      else
       {
         sprintf(tcpBuffer, "#eof");
         buflen = 0;
@@ -3780,18 +3859,18 @@ void loop() {
 
       httpResp = "";
 
-      /*
-                  if (strcmp(packetBuffer,"@V") == 0) // query version
-                  {
-                    int s;
-                    for (s=0; s<sizeof(VERSION); s++)
-                    {
-                      Serial.write(VERSION[s]);   // write on serial KNXgate/SCSgate
-                      delayMicroseconds(50);
-                    }
-                  }
-                  else
-      */
+      /*--------------------------------------------------------------------------
+          if (strcmp(packetBuffer,"@V") == 0) // query version
+          {
+            int s;
+            for (s=0; s<sizeof(VERSION); s++)
+            {
+              Serial.write(VERSION[s]);   // write on serial KNXgate/SCSgate
+              delayMicroseconds(50);
+            }
+          }
+          else
+      --------------------------------------------------------------------------*/
       
       if (strcmp(udpBuffer, "@Keep_alive") == 0)
       {
@@ -3802,7 +3881,7 @@ void loop() {
       }
       else
       {
-        firstTime = 0;  // msg udp: ora i comandi MQTT vanno fatti precedere dal setup
+        firstTime = 0;  // messaggio udp arrivato: ora i comandi MQTT vanno fatti precedere dal setup
         int s = 0;
         while (s < len)
         {
@@ -3841,11 +3920,13 @@ void loop() {
       internal = 1;
       lmax = (prefix & 0x0F);
       lmax++;
+#ifdef MQTTLOG
       if (mqtt_log == 'y')
       {
         sprintf(logCh, "%02X > ", prefix);
         log += logCh;
       }
+#endif
 #ifdef USE_TCPSERVER
   #ifdef DEBUG_FAUXMO_TCP         
       if (tcpuart == 2)  
@@ -3862,11 +3943,13 @@ void loop() {
       internal = 0;
       replyBuffer[replyLen++] = prefix;
       lmax = 255;
+#ifdef MQTTLOG
       if (mqtt_log == 'y')
       {
         sprintf(logCh, "%02X ", prefix);
         log += logCh;
       }
+#endif
 #ifdef USE_TCPSERVER
   #ifdef DEBUG_FAUXMO_TCP         
       if (tcpuart == 2)  
@@ -3882,11 +3965,13 @@ void loop() {
       while (Serial.available() && (replyLen < lmax))
       {
         replyBuffer[replyLen] = Serial.read();        // receive from serial USB
+#ifdef MQTTLOG
         if (mqtt_log == 'y')
         {
           sprintf(logCh, "%02X ", replyBuffer[replyLen]);
           log += logCh;
         }
+#endif
 #ifdef USE_TCPSERVER
   #ifdef DEBUG_FAUXMO_TCP         
         if (tcpuart == 2)  
@@ -3903,7 +3988,9 @@ void loop() {
     }
 
 
+#ifdef MQTTLOG
     if ((mqtt_log == 'y') && (replyLen > 0)) WriteLog(log);
+#endif
 #ifdef USE_TCPSERVER
   #ifdef DEBUG_FAUXMO_TCP         
     if ((tcpuart == 2) && (tcpclient) && (tcpclient.connected())) 
@@ -4005,16 +4092,29 @@ void loop() {
 
   // =========================================== M Q T T  PUBLISH=================================================
 
-
-  // ------------[0xF3] [D] 32 00 ----(address,type)---------- CENSIMENTO DEVICES -------------------------------------------------------
-  if ((replyLen == 4) && (devIx > 0) && (replyBuffer[0] == 0xF3) && (replyBuffer[1] == DEVICEREQUEST)) // started from handleMqttDevices
+#ifdef SCS
+  // ------------[0xF4] [D] <index> <device> <type> ----------------------- CENSIMENTO DEVICES -------------
+  if ((replyLen == 5) && (devIx > 0) && (replyBuffer[0] == 0xF4) && (replyBuffer[1] == DEVICEREQUEST)) // started from handleMqttDevices
   {
-    char devtype;
     char devCall = devIx;
     devIx   = replyBuffer[2];
-    devtype = replyBuffer[3];
-    if ((devtype == 0xFF) || ((devCall > 1) && (devIx < devCall)))
+    char device = replyBuffer[3];
+    char devtype = replyBuffer[4];
+#endif
+#ifdef KNX
+  // ------------[0xF5] [D] <index> <linesector> <device> <type> ------ CENSIMENTO DEVICES ----------------
+  if ((replyLen == 6) && (devIx > 0) && (replyBuffer[0] == 0xF5) && (replyBuffer[1] == DEVICEREQUEST)) // started from handleMqttDevices
+  {
+//  char devCall = devIx;
+    devIx  = replyBuffer[2];
+    char linesector = replyBuffer[3];
+    char device = replyBuffer[4];
+    char devtype = replyBuffer[5];
+#endif
+
+    if ((devtype == 0xFF))  // || ((devCall > 1) && (devIx < devCall)))
     {
+      WriteEEP((char*)&device_BUS_id[0], E_MQTT_TABDEVICES, (int) DEV_NR * E_MQTT_TABLEN);
       EEPROM.commit();
       if (firstTime == 0) setFirst();  // DEVONO essere attivi @MX  e §l
       devIx = 0;
@@ -4026,8 +4126,7 @@ void loop() {
     }
     else if (devIx == 0)
     {
-      mqttSectorLine = devtype;
-      EEPROM.write(E_MQTT_TABDEVICES, devtype);
+      device_BUS_id[devIx].Val = 0;
       devIx++;
       uartSemaphor = 1;
       requestBuffer[requestLen++] = '§';
@@ -4037,22 +4136,20 @@ void loop() {
     }
     else
     {
-
-#ifdef SCS
-      MQTTnewdevice(devtype, devIx);
-      devCtr++;
-#endif
 #ifdef KNX
-      MQTTnewdevice(devtype, mqttSectorLine, devIx);
-      devCtr++;
+      char dvx = ixOfDeviceNew(linesector, device);
 #endif
-      EEPROM.write(devIx + E_MQTT_TABDEVICES, devtype);
+#ifdef SCS
+      char dvx = ixOfDeviceNew(device);
+#endif
+      MQTTnewdevice(dvx, 0);
+      devCtr++;
+      device_BUS_id[dvx].type = devtype;
+      String dsc = descrOfIx(dvx);
 
-      char dsc = EEPROM.read((int) devIx * E_ALEXA_DESC_LEN + E_ALEXA_DESC_DEVICE);
-
-      if ((dsc == 0) || (dsc == 0xFF))
+      if ((dsc[0] == 0) || (dsc[0] == 0xFF) || (dsc == ""))
       {
-        // descrizione standard per ALEXA - E_ALEXA_DESC_DEVICE 1024 // device description max 168 x E_ALEXA_DESC_LEN char
+        // descrizione standard per ALEXA 
         char AlexaDescr[E_ALEXA_DESC_LEN];
 #ifdef SCS
         sprintf(AlexaDescr, "dispositivo scs %02X", devIx);  // device
@@ -4061,7 +4158,7 @@ void loop() {
         sprintf(AlexaDescr, "dispositivo knx ");
         DeviceOfIx(devIx, (char *) &AlexaDescr[16]);
 #endif
-        WriteEEP((char *) AlexaDescr, (int) devIx * E_ALEXA_DESC_LEN + E_ALEXA_DESC_DEVICE, E_ALEXA_DESC_LEN);
+        WriteDescrOfIx(AlexaDescr, devIx);
       }
 
       devIx++;
@@ -4076,25 +4173,40 @@ void loop() {
   // ----------------------------------------- FINE CENSIMENTO DEVICES -------------------------------------------------------
   else
 
-  // ---------------------u-posizione tapparelle o dimmer %---------------------------------------------------------------------
-  if ((replyLen == 4) && (replyBuffer[0] == 0xF3))    
-  { // replyLen==4 && replyBuffer == 0xF3 'u'
+
+
+
 
   // ----------------------------------------- ALEXA STATO DEVICES ---------------------------------------------------------
+    
+
+  // ---------------------u-posizione tapparelle o dimmer %---------------------------------------------------------------------
+
+#ifdef KNX
+  //    [F4] u <linesector> <address> <position%>
+  if ((replyLen == 5) && (replyBuffer[0] == 0xF4))    
+  { // replyLen==5 && replyBuffer == 0xF4 'u'
+    char linesector = replyBuffer[2];
+    char device = replyBuffer[3];
+    int pct = replyBuffer[4];
+    char devx = ixOfDevice(linesector, device);
+#endif
+#ifdef SCS    
+  //    [F3] u <address> <position%>
+  if ((replyLen == 4) && (replyBuffer[0] == 0xF3))    
+  { // replyLen==4 && replyBuffer == 0xF3 'u'
+    char device = replyBuffer[2];
+    int pct = replyBuffer[3];
+    char devx = ixOfDevice(device);
+#endif
     
     if (replyBuffer[1] == 'u')    //'u': posizione tapparelle//
     {
       if (alexaParam == 'y')      //u//
-      { // aggiornamento posizione coverpct fauxmo   [0xF3] [u] 32 00
-        unsigned char id_alexa = 0;
-
-        while ((alexa_BUS_id[id_alexa] != replyBuffer[2]) && (id_alexa <= id_fauxmo)) 
+      { // aggiornamento posizione coverpct fauxmo   
+        char id_alexa = device_BUS_id[devx].alexa_id;
+        if (id_alexa)
         {
-          id_alexa++;
-        };  // index: device id alexa max 168 devices    data: ID scs
-        if (id_alexa <= id_fauxmo)
-        {
-          int pct = replyBuffer[3];
           pct *= 255;
           pct /= 100;
           if (pct == 0)  pct = 1;
@@ -4109,21 +4221,18 @@ void loop() {
 
     // ----------------------------------------- ALEXA STATO DEVICES END----------------------------------------------------
 
-
-
     // ----------------uab-(address position)--- PUBBLICAZIONE STATO COVERPCT -------------------------------------------------------
       if (mqttopen == 3)    //u//
-      { // pubblicazione posizione coverpct   [0xF3] [u] 32 00
+      { // pubblicazione posizione coverpct   
         char actionc[6];
 
-        sprintf(actionc, "%03u", replyBuffer[3]);     // position
+        sprintf(actionc, "%03u", pct);     // position
         char nomeDevice[5];
 #ifdef SCS
-        sprintf(nomeDevice, "%02X", replyBuffer[2]);  // device
+        sprintf(nomeDevice, "%02X", device);  // device
 #endif
 #ifdef KNX
-        char sectorline = EEPROM.read(E_MQTT_TABDEVICES);
-        sprintf(nomeDevice, "%02X%02X", sectorline, replyBuffer[2]);  // device
+        sprintf(nomeDevice, "%02X%02X", linesector, device);  // device
 #endif
         String topic = COVERPCT_STATE;
         topic += nomeDevice;
@@ -4142,14 +4251,13 @@ void loop() {
       { // pubblicazione posizione dimmer   [0xF3] [m] 32 00
         char actionc[6];
 
-        sprintf(actionc, "%03u", replyBuffer[3]);     // position
+        sprintf(actionc, "%03u", pct);     // position
         char nomeDevice[5];
 #ifdef SCS
-        sprintf(nomeDevice, "%02X", replyBuffer[2]);  // device
+        sprintf(nomeDevice, "%02X", device);  // device
 #endif
 #ifdef KNX
-        char sectorline = EEPROM.read(E_MQTT_TABDEVICES);
-        sprintf(nomeDevice, "%02X%02X", sectorline, replyBuffer[2]);  // device
+        sprintf(nomeDevice, "%02X%02X", linesector, device);  // device
 #endif
         String topic = BRIGHT_STATE;
         topic += nomeDevice;
@@ -4159,7 +4267,7 @@ void loop() {
     }    
     
     replyLen = 0; // per impedire pubblicazione UDP
-  } // replyLen==4 && replyBuffer == 0xF3 
+  } // replyLen==4 - 5  && replyBuffer == 0xF3-F4
     
   else
 
@@ -4171,7 +4279,7 @@ void loop() {
 
   if ((mqttopen == 3) && (replyLen == 6) && (replyBuffer[0] == 0xF5) && (replyBuffer[1] == 'y'))
   { // START pubblicazione stato device        [0xF5] [y] 32 00 12 01
-    char devtype; //                                  0x79
+    char devtype;
     char action;
     String topic = "NOTOPIC";
     String payload = "";
@@ -4182,7 +4290,8 @@ void loop() {
     // SCS intero   [7] A8 32 00 12 01 21 A3
     // SCS ridotto [0xF5] [y] 32 00 12 01
 
-    char device = 0;
+    char devx = 0;
+    char device;
     if (replyBuffer[4] == 0x12)  // <-comando----------------------------
     {
       action = replyBuffer[5];
@@ -4195,17 +4304,20 @@ void loop() {
           payload = "ON";
         else if (action == 1)
           payload = "OFF";
-        for (device = 1; device < 168; device++)
+
+        devx = 1;
+        while ((devx < DEV_NR) && (device_BUS_id[devx].address))
         {
-          devtype = EEPROM.read(device + E_MQTT_TABDEVICES);
+          devtype = device_BUS_id[devx].type;
           if ((devtype == 1) || (devtype == 3))  // dimmer
           {
-            sprintf(nomeDevice, "%02X", device);  // to
+            sprintf(nomeDevice, "%02X", device_BUS_id[devx].address);  // to
             topic = SWITCH_STATE;
             topic += nomeDevice;
             cPayload = payload.c_str();
             cTopic = topic.c_str();
             client.publish(cTopic, cPayload, mqtt_persistence);
+            devx++;
           }
         }
         device = 0;
@@ -4326,36 +4438,32 @@ void loop() {
   // knx ridotto  [0xF5] [y] 29 0B 65 81
 
   //    word device = word(replyBuffer[2], replyBuffer[3]);
-
-      char sectorline = replyBuffer[3];  // sector & line da telegramma
-      char device = replyBuffer[4];      // id device da telegramma
+      DEVADDR deva;
+      deva.linesector = replyBuffer[3];  // sector & line da telegramma
+      deva.address = replyBuffer[4];      // id device da telegramma
       char dispari = 0;
-      char eedev;
-
       action = replyBuffer[5];
-      eedev = device;
-      if (device & 0x01)
+      if (deva.address & 0x01)
       {
         dispari = 1;           // dispari: id domoticz = id telegramma
       }
       else
       {
-        device--;              // pari:    id domoticz = id telegramma - 1
+        deva.address--;              // pari:    id domoticz = id telegramma - 1
       }
             
-      eedev = ixOfDevice(device);
-
-      devtype = EEPROM.read(eedev + E_MQTT_TABDEVICES);
+      char devx = ixOfDevice(deva);
+      devtype = device_BUS_id[devx].type;
       if ((devtype < 0x01) || (devtype > 8))
         devtype = 0x01;
 
-      if ((device != 0) && (devtype != 0))
+      if ((devx != 0) && (devtype != 0))
         //    if ((device != 0) && (devtype != 0) && ((device != prevDevice) || (action != prevAction)))
       { // device valido & evitare doppioni
-        prevDevice = device;
+        prevDevice = devx;
         prevAction = action;
         char nomeDevice[6];
-        sprintf(nomeDevice, "%02X%02X", sectorline, device);  // to
+        sprintf(nomeDevice, "%02X%02X", deva.linesector, deva.address);  // to
         // ----------------------------------------- STATO SWITCH --------------------------------------------
         if (devtype == 1)
         {
@@ -4513,11 +4621,13 @@ void loop() {
           sprintf(logCh, "%02X ", requestBuffer[s]);
           log += logCh;
 #else
+#ifdef MQTTLOG
           if (mqtt_log == 'y')
           {
             sprintf(logCh, "%02X ", requestBuffer[s]);
             log += logCh;
           }
+#endif
 #endif
 #ifdef USE_TCPSERVER
 #ifdef DEBUG_FAUXMO_TCP         
@@ -4534,7 +4644,9 @@ void loop() {
 #ifdef DEBUG
         Serial.println("\r\n" + log);
 #else
+#ifdef MQTTLOG
         if (mqtt_log == 'y') WriteLog(log);
+#endif
 #endif
 
 #ifdef USE_TCPSERVER
@@ -4581,111 +4693,298 @@ void loop() {
 
 
 // =====================================================================================================
+// DEVADDR device_BUS_id[DEV_NR]; // pointer: eventuale id alexa - contenuto: device address reale (scs o knx) e tipo
 // =====================================================================================================
 #ifdef KNX
-char ixOfDevice(char * knxdevice)
+char ixOfDeviceNew(char * knxdevice)
 {
-  char device;
   char *ch;
-  if (*(knxdevice+2) == 0) // 2 caratteri
-      device = (char)strtoul(knxdevice, &ch, 16);
-  else
-  if (*(knxdevice+4) == 0) // 4 caratteri
-  {
-      char sectorline = EEPROM.read(E_MQTT_TABDEVICES);
-      device = (char)strtoul(knxdevice+2, &ch, 16);
-      *(knxdevice+2) = 0; // 2 caratteri
-      char sectlin = (char)strtoul(knxdevice, &ch, 16);
-      if (sectlin != sectorline)
-          EEPROM.write(E_MQTT_TABDEVICES, sectlin);
-  }
-  else
-  {
-    *(knxdevice+2) = 0; // 2 caratteri
-    device = (char)strtoul(knxdevice, &ch, 16);
-  }
+  char x = 1;
+  
+  char device = (char)strtoul(knxdevice+2, &ch, 16);
+  *(knxdevice+2) = 0; // 2 caratteri
+  char linsect = (char)strtoul(knxdevice, &ch, 16);
 
-  device++;                  // id eeprom = id telegramma + 1 >> 1
-  device>>=1;
-//  devtype = EEPROM.read(knxdevice + E_MQTT_TABDEVICES);
-  return device;
+  if ((device == 0) || (linsect == 0))  return 0;
+  
+  while (x < DEV_NR)
+  {
+    if ((device_BUS_id[x].address == device) && (device_BUS_id[x].linesector == linsect))
+        return x;
+    else
+    if (device_BUS_id[x].address == 0)
+    { 
+        device_BUS_id[x].linesector = linsect;
+        device_BUS_id[x].address = device;
+        device_BUS_id[x].type = 1;
+        device_BUS_id[x].alexa_id = 0;
+        return x;
+    }
+	x++;
+  }
+  return 0;
 }
 //--------------------------------------------------------------------
-char ixOfDevice(char knxdevice)
+char ixOfDeviceNew(char linsect, char device)
 {
-//  0x4F (0100 1111) --> (0010 1000) 0x28
-//  0x50 (0101 0000) --> (0010 1000) 0x28
-//  0x51 (0101 0001) --> (0010 1001) 0x29
-//  0x51 (0101 0010) --> (0010 1001) 0x29
+  char x = 1;
+  if ((device == 0) || (linsect == 0))  return 0;
+  
+  while (x < DEV_NR)
+  {
+    if ((device_BUS_id[x].address == device) && (device_BUS_id[x].linesector == linsect))
+        return x;
+    else
+    if (device_BUS_id[x].address == 0)
+    { 
+        device_BUS_id[x].linesector = linsect;
+        device_BUS_id[x].address = device;
+        device_BUS_id[x].type = 1;
+        device_BUS_id[x].alexa_id = 0;
+        return x;
+    }
+	x++;
+  }
+  return 0;
+}
+//--------------------------------------------------------------------
+char ixOfDevice(char * knxdevice)
+{
+  char *ch;
+  char x = 1;
+  
+  char device = (char)strtoul(knxdevice+2, &ch, 16);
+  *(knxdevice+2) = 0; // 2 caratteri
+  char linsect = (char)strtoul(knxdevice, &ch, 16);
+  if ((device == 0) || (linsect == 0))  return 0;
 
-  knxdevice++;                  // id eeprom = id telegramma + 1 >> 1
-  knxdevice>>=1;
-//  devtype = EEPROM.read(knxdevice + E_MQTT_TABDEVICES);
-  return knxdevice;
+  while (x < DEV_NR)
+  {
+    if ((device_BUS_id[x].address == device) && (device_BUS_id[x].linesector == linsect))
+        return x;
+    else
+    if (device_BUS_id[x].address == 0)
+		return 0;
+	x++;
+  }
+  return 0;
+}
+//--------------------------------------------------------------------
+char ixOfDevice(DEVADDR device)
+{
+  char x = 1;
+  if ((device.address == 0) || (device.linesector == 0))  return 0;
+  while (x < DEV_NR)
+  {
+    if ((device_BUS_id[x].address == device.address) && (device_BUS_id[x].linesector == device.linesector))
+        return x;
+    else
+    if (device_BUS_id[x].address == 0)
+    return 0;
+  x++;
+  }
+  return 0;
+}
+//--------------------------------------------------------------------
+char ixOfDevice(char linsect, char device)
+{
+  char x = 1;
+  if ((device == 0) || (linsect == 0))  return 0;
+  while (x < DEV_NR)
+  {
+    if ((device_BUS_id[x].address == device) && (device_BUS_id[x].linesector == linsect))
+        return x;
+    else
+    if (device_BUS_id[x].address == 0)
+    return 0;
+  x++;
+  }
+  return 0;
 }
 //--------------------------------------------------------------------
 char DeviceOfIx(char ixdevice)
 {
-//  (0010 1000) 0x28 --> 0x4F (0100 FFFF)  
-//  (0010 1001) 0x29 --> 0x51 (0101 0001)
- 
-  char device = ixdevice;
-  device<<=1;   // ricostruito a 8 bit
-  device--;      // base dispari
-  return device;
+// DEVADDR device_BUS_id[DEV_NR]; // pointer: eventuale id alexa - contenuto: device address reale (scs o knx) e tipo
+  return device_BUS_id[ixdevice].address;
 }
 //--------------------------------------------------------------------
-char DeviceOfIx(char ixdevice, char * knxname)
+char DeviceOfIx(char ixdevice, char * busname)
 {
-  char sectorline = EEPROM.read(E_MQTT_TABDEVICES);
-  char device = ixdevice;
-  device<<=1;   // ricostruito a 8 bit
-  device--;      // base dispari
-  sprintf(knxname, "%02X%02X", sectorline, device);  // to
-  return device;
+  char device = device_BUS_id[ixdevice].address;
+  sprintf(busname, "%02X%02X", device_BUS_id[ixdevice].linesector, device_BUS_id[ixdevice].address);  // to
+  return device_BUS_id[ixdevice].address;
 }
 //--------------------------------------------------------------------
-char DeviceOfIx(char sectorline, char ixdevice, char * knxname)
+String descrOfIx(char scsdevX)
 {
-  char device = ixdevice;
-  device<<=1;   // ricostruito a 8 bit
-  device--;      // base dispari
-  sprintf(knxname, "%02X%02X", sectorline, device);  // to
-  return device;
+  if (scsdevX < DEV_NR)
+  {
+      String edes = ReadStream(&edes[0], (int)E_ALEXA_DESC_DEVICE + (scsdevX * E_ALEXA_DESC_LEN), E_ALEXA_DESC_LEN, 2); // tipo=0 binary array   1:ascii array   2:ascii string
+      return edes;
+  }
+  else
+  {
+      char cdes[E_ALEXA_DESC_LEN];
+      sprintf(cdes, "dispositivo knx ");
+      DeviceOfIx(devIx, (char *) &cdes[16]);
+      String edes(cdes);
+      return edes;
+  }
 }
 #endif
 //--------------------------------------------------------------------
+
+
+
+//--------------------------------------------------------------------
+char WriteDescrOfIx(String edesc, char scsdevX)
+{
+  if (scsdevX < DEV_NR)
+  {
+      WriteEEP(edesc, scsdevX * E_ALEXA_DESC_LEN + E_ALEXA_DESC_DEVICE, E_ALEXA_DESC_LEN);
+      return 1;
+  }
+  return 0;
+}
+//--------------------------------------------------------------------
+
+
 
 
 //--------------------------------------------------------------------
 #ifdef SCS
-char ixOfDevice(char * scsdevice)
+char ixOfDeviceNew(char device)
 {
-  char device;
-  char *ch;
-  *(scsdevice+2) = 0; // 2 caratteri
-  device = (char)strtoul(scsdevice, &ch, 16);
-
-  return device;
-//devtype = EEPROM.read(knxdevice + E_MQTT_TABDEVICES);
+  char x = 1;
+  if (device == 0)  return 0;
+  while (x < DEV_NR)
+  {
+    if (device_BUS_id[x].address == device)
+        return x;
+    else
+    if (device_BUS_id[x].address == 0)
+    { 
+        device_BUS_id[x].linesector = 0;
+        device_BUS_id[x].address = device;
+        device_BUS_id[x].type = 1;
+        device_BUS_id[x].alexa_id = 0;
+        return x;
+    }
+	x++;
+  }
+  return 0;
 }
 //--------------------------------------------------------------------
-char ixOfDevice(char scsdevice)
+char ixOfDeviceNew(char * scsdevice)
 {
- return scsdevice;
+  char *ch;
+  char x = 1;
+  
+  *(scsdevice+2) = 0; // 2 caratteri
+  char device = (char)strtoul(scsdevice, &ch, 16);
+
+  if (device == 0)  return 0;
+
+  while (x < DEV_NR)
+  {
+    if (device_BUS_id[x].address == device)
+        return x;
+    else
+    if (device_BUS_id[x].address == 0)
+    { 
+        device_BUS_id[x].linesector = 0;
+        device_BUS_id[x].address = device;
+        device_BUS_id[x].type = 1;
+        device_BUS_id[x].alexa_id = 0;
+        return x;
+    }
+	x++;
+  }
+  return 0;
+}
+//--------------------------------------------------------------------
+char ixOfDevice(char * scsdevice)
+{
+  char *ch;
+  *(scsdevice+2) = 0; // 2 caratteri
+  char device = (char)strtoul(scsdevice, &ch, 16);
+  if (device == 0)  return 0;
+
+  char x = 1;
+  while (x < DEV_NR)
+  {
+    if (device_BUS_id[x].address == device)
+        return x;
+    else
+    if (device_BUS_id[x].address == 0)
+		return 0;
+	x++;
+  }
+  return 0;
+}
+//--------------------------------------------------------------------
+char ixOfDevice(DEVADDR device)
+{
+  char x = 1;
+  if (device.address == 0)  return 0;
+  while (x < DEV_NR)
+  {
+    if (device_BUS_id[x].address == device.address)
+        return x;
+    else
+    if (device_BUS_id[x].address == 0)
+    return 0;
+  x++;
+  }
+  return 0;
+}
+//--------------------------------------------------------------------
+char ixOfDevice(char device)
+{
+  char x = 1;
+  if (device == 0)  return 0;
+  while (x < DEV_NR)
+  {
+    if (device_BUS_id[x].address == device)
+        return x;
+    else
+    if (device_BUS_id[x].address == 0)
+    return 0;
+  x++;
+  }
+  return 0;
 }
 //--------------------------------------------------------------------
 char DeviceOfIx(char ixdevice)
 {
-  return ixdevice;
+  return device_BUS_id[ixdevice].address;
 }
 //--------------------------------------------------------------------
-char DeviceOfIx(char ixdevice, char * scsname)
+char DeviceOfIx(char ixdevice, char * busname)
 {
-  sprintf(scsname, "%02X", ixdevice);
-  return ixdevice;
+  sprintf(busname, "%02X", device_BUS_id[ixdevice].address);
+  return device_BUS_id[ixdevice].address;
 }
+//--------------------------------------------------------------------
+String descrOfIx(char scsdevX)
+{
+  if (scsdevX < DEV_NR)
+  {
+      String edes = ReadStream(&edes[0], (int)E_ALEXA_DESC_DEVICE + (scsdevX * E_ALEXA_DESC_LEN), E_ALEXA_DESC_LEN, 2); // tipo=0 binary array   1:ascii array   2:ascii string
+      return edes;
+  }
+  else
+  {
+      char cdes[E_ALEXA_DESC_LEN];
+      sprintf(cdes, "dispositivo scs %02X", devIx);  // device
+      String edes(cdes);
+      return edes;
+  }
+}
+//--------------------------------------------------------------------
 #endif
+
+
 // =====================================================================================================
 // =====================================================================================================
 char BufferSearch(void)
@@ -4703,7 +5002,7 @@ char BufferSearch(void)
 char SendToPIC(char bufNr)
 {
    char len = serOlen[bufNr];
-   // =============================CICLO SCRITTURA BUFFER UART =================================================
+   // =============================CICLO SCRITTURA BUFFER UART =========================================
    if (len > 0)
    {
      bufSemaphor = bufNr;
@@ -4741,11 +5040,13 @@ char SendToPIC(char bufNr)
        sprintf(logCh, "%02X ", serObuffer[bufNr][s]);
        log += logCh;
 #else
+#ifdef MQTTLOG
        if (mqtt_log == 'y')
        {
          sprintf(logCh, "%02X ", serObuffer[bufNr][s]);
          log += logCh;
        }
+#endif
 #endif
 #ifdef USE_TCPSERVER
   #ifdef DEBUG_FAUXMO_TCP         
@@ -4763,7 +5064,9 @@ char SendToPIC(char bufNr)
 #ifdef DEBUG
      Serial.println("\r\n" + log);
 #else
+#ifdef MQTTLOG
      if (mqtt_log == 'y') WriteLog(log);
+#endif
 #endif
 
 #ifdef USE_TCPSERVER
