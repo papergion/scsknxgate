@@ -1,20 +1,20 @@
 //----------------------------------------------------------------------------------
 #define _FW_NAME     "SCSKNXGATE"
-#define _FW_VERSION  "VER_5.054"
+#define _FW_VERSION  "VER_5.0583 "
 #define _ESP_CORE    "esp8266-2.5.2"
 //----------------------------------------------------------------------------------
 //
 //        ---- attenzione - porta http: 8080 <--se alexaParam=y--------------
 //
 //----------------------------------------------------------------------------------
-// revisione solo KNX - gestione indirizzo a 2 bytes nelle tabelle
-//
-//
+// revisione KNX - gestione indirizzo a 2 bytes nelle tabelle
+//----------------------------------------------------------------------------------
 
-#define KNX
-//#define SCS
+//#define KNX
+#define SCS
 //#define DEBUG
 //#define MQTTLOG
+#define BLINKLED     // funziona solo su ESP01S //
 
 #define NO_ALEXA_MQTT
 #define USE_TCPSERVER
@@ -205,7 +205,6 @@ unsigned char ArduinoOTAflag = 0;
 #ifdef BLINKLED
 char ledCtr = 0;
 #endif
-
 // =======================================================================================================================
 char mqtt_server[32];
 char mqtt_user[32];
@@ -215,17 +214,15 @@ char mqtt_port[6];
 char mqtt_retry = 0;
 char mqtt_log = 0;
 char mqtt_retrylimit = 24; //x 10=240sec (4min) -limite oltre il quale si resetta per broker non disponibile
-char domoticMode;    // d=as domoticz      h=as homeassistant
+char domoticMode;    // d=as domoticz      h=as homeassistant      maiuscolo=pari dispari
 char alexaParam = 0;
+char countRestart = 0;
 
 WiFiClient espClient;
 
 PubSubClient client(espClient);
 
 unsigned char mqttopen = 0;
-
-long lastMsg = 0;
-long lastRecu = 0;
 
 #ifdef SCS
 char prevDevice;
@@ -245,7 +242,9 @@ char uartSemaphor = 0;
 #define INNERWAIT   90  // inner loop delay
 #define OUTERWAIT  120  // outer loop delay
 
-long prevTime = 0;
+signed int now;
+signed int prevTime = 0;  
+signed int lastMsg = 0;
 
 #ifdef DEBUG
 int  counter;
@@ -273,7 +272,6 @@ char connectionType = 255;  // 1=AP    0=router
 unsigned int udp_remote_port;
 unsigned int tcp_remote_port;
 char   webon = 0;
-char   forceAP = 0;
 String wifiSignals;
 String content;
 
@@ -326,7 +324,9 @@ WiFiUDP udpConnection;
 // ==============================================================================================================
 typedef union _DEVICE    {
   struct {
+#ifdef KNX
         char linesector;      
+#endif
         char address;	      
         char type;		      
         char alexa_id;		      
@@ -484,6 +484,7 @@ void setupAP(void)
 
 // =============================================================================================
 void handleNotFound() {
+  if (firstTime == 0) setFirst();
   String message = "File non trovato\n\n";
   message += "URI: ";
   message += server.uri();
@@ -547,6 +548,8 @@ void handleRequest()
 
   content += "</html>";
   server.send(200, "text/html", content);
+  content = "";
+  if (firstTime == 0) setFirst();
 }
 // =============================================================================================
 void setFirst(void)
@@ -588,6 +591,7 @@ void handleGate() //  ipaddress/request?type=x&from=xx&to=yy&cmd=zz&resp=y
 //                                      cmd=    NN  hex comando da mandare
 //                                      resp=   y     "y" request to send a response, otherwise no response
 {
+  if (firstTime == 0) setFirst();
 
   //    if(!server.authenticate(www_username, www_password))
   //        return server.requestAuthentication();
@@ -706,9 +710,6 @@ void handleGate() //  ipaddress/request?type=x&from=xx&to=yy&cmd=zz&resp=y
   Serial.println(ccmd, HEX);
 #endif
   {
-    if (firstTime == 0)
-      setFirst();
-
     // tapparelle percentuale
     if (cfrom == 0xFE) // <================COVERPCT==================
     {
@@ -762,6 +763,7 @@ void handleGate() //  ipaddress/request?type=x&from=xx&to=yy&cmd=zz&resp=y
 // =============================================================================================
 void handleMqttConfig()
 {
+  if (firstTime == 0) setFirst();
   IPAddress ip = WiFi.softAPIP();
   content = "<!DOCTYPE HTML>\r\n<html>Hello from ESP_" _MODO "GATE " _FW_VERSION;
   content += "<p>";
@@ -799,12 +801,14 @@ void handleMqttConfig()
 
   content += "' style='width:20px'><input type='submit'></form> </html>";
   server.send(200, "text/html", content);
+  content = "";
 }
 
 // =============================================================================================
 void handleMqttCFG()
 {
   IPAddress ip = WiFi.softAPIP();
+  if (firstTime == 0) setFirst();
 
   int i;
   String broker = server.arg("broker");
@@ -815,7 +819,6 @@ void handleMqttCFG()
   String dom  = server.arg("dom");
   String pers  = server.arg("persistence");
   String alex  = server.arg("alexa");
-  if (dom[0] == 'H') dom[0] = 'h';
   if (log[0] == 'Y') log[0] = 'y';
   if (pers[0] == 'Y') pers[0] = 'y';
   if (alex[0] == 'Y') alex[0] = 'y';
@@ -835,7 +838,7 @@ void handleMqttCFG()
     pswd.toCharArray(mqtt_password, sizeof(mqtt_password));
 
     if (dom.length() == 0) dom = "d";
-    domoticMode = dom.charAt(0);
+    domoticMode = dom.charAt(0);  // minuscolo
     if (log.length() == 0) log = "n";
     mqtt_log = log.charAt(0);
     if (pers.length() == 0) pers = "n";
@@ -862,6 +865,7 @@ void handleMqttCFG()
   }
 
   server.send(statusCode, "application/json", content);
+  content = "";
 }
 // =============================================================================================
 void handleMqttDevices()  // inizio processo di censimento automatico dei devices scs
@@ -897,10 +901,11 @@ void handleMqttDevices()  // inizio processo di censimento automatico dei device
         content += ", \"mqtt\":\"CLOSED\"}";
 
       statusCode = 200;
-      setFirst();  // DEVONO essere attivi @MX  e @l
       requestBuffer[requestLen++] = '§';
       requestBuffer[requestLen++] = DEVICEREQUEST;
       requestBuffer[requestLen++] = 0xFF;
+      immediateSend();
+      delay(200);       // wait 200mS
       requestBuffer[requestLen++] = '§';
       requestBuffer[requestLen++] = 'U';
       requestBuffer[requestLen++] = '1';
@@ -922,7 +927,7 @@ void handleMqttDevices()  // inizio processo di censimento automatico dei device
       requestBuffer[requestLen++] = 'U';
       requestBuffer[requestLen++] = '2'; // fine censimento
       immediateSend();
-      delay(500);       // wait 400mS due to pic eeprom write
+      delay(600);       // wait 600mS due to pic eeprom write
 
       requestBuffer[requestLen++] = '§';
       requestBuffer[requestLen++] = DEVICEREQUEST;
@@ -1104,6 +1109,7 @@ void handleMqttDevices()  // inizio processo di censimento automatico dei device
   uartSemaphor = 0;
 
   server.send(statusCode, "text/html", content);
+  content = "";
 }
 
 
@@ -1316,6 +1322,7 @@ void handleDeviceName()  // denominazione devices scoperti - per alexa
   content += "</form> </html>";
 
   server.send(200, "text/html", content);
+  content = "";
 }
 
 
@@ -1353,6 +1360,7 @@ void handleScan()
   content += "' style='width:50px'><input type='submit'></form></html>";
   server.send(200, "text/html", content);
   wifiSignals = "";
+  content = "";
 }
 // =============================================================================================
 void handleSetting()
@@ -1384,6 +1392,7 @@ void handleSetting()
   statusCode = 200;
 
   server.send(statusCode, "application/json", content);
+  content = "";
 }
 // =============================================================================================
 void handleRoot()
@@ -1392,6 +1401,7 @@ void handleRoot()
   content += WiFi.localIP().toString();
   content += "</html>";
   server.send(200, "text/html", content);
+  content = "";
 }
 // =============================================================================================
 void handleClear()
@@ -1399,6 +1409,7 @@ void handleClear()
   content = "<!DOCTYPE HTML>\r\n<html>";
   content += "<p>Clearing the EEPROM - reboot.</p></html>";
   server.send(200, "text/html", content);
+  content = "";
   for (int i = 0; i < 4096; ++i) {
     EEPROM.write(i, 0);
   }
@@ -1415,6 +1426,7 @@ void handleCallback()
   content += "' style='width:800px'> <input type='submit'></form>";
   content += "</html>";
   server.send(200, "text/html", content);
+  content = "";
 }
 // =============================================================================================
 void handleBackSetting()
@@ -1430,6 +1442,7 @@ void handleBackSetting()
   statusCode = 200;
 
   server.send(statusCode, "application/json", content);
+  content = "";
 }
 // =============================================================================================
 #ifdef MQTTLOG
@@ -1580,6 +1593,7 @@ void MqttCallback(char* topic, byte* payload, unsigned int length)
     {
       int pct = atoi(packetBuffer);    // percentuale
       command = (unsigned char) pct;
+      if (command == 0xFF) command = 0xFE;
     }
   }
   else    
@@ -1614,7 +1628,7 @@ void MqttCallback(char* topic, byte* payload, unsigned int length)
       {
         int pct = atoi(packetBuffer);    // percentuale
         // --------------- percentuale da 1 a 255 (home assistant) -----------
-        if (domoticMode == 'h')   // h=as homeassistant
+        if ((domoticMode == 'h') || (domoticMode == 'H'))   // h=as homeassistant
         { // percentuale 0-255
           pct *= 100;                  // da 0 a 25500
           pct /= 255;                  // da 0 a 100
@@ -1775,7 +1789,7 @@ void MqttCallback(char* topic, byte* payload, unsigned int length)
 
   if (reply == 1)
   {
-    if (domoticMode == 'h') // home assistant
+    if ((domoticMode == 'h') || (domoticMode == 'H')) // home assistant
     {
       if (payloads.substring(0, 5) == "CLOSE")   // discesa - chiudi
         payloads = "closed";
@@ -1860,7 +1874,6 @@ void handleReset()
 
   if (param == "mqtt")
   {
-
     if (!client.connected())
       client.disconnect();
     mqttopen = 0;
@@ -1880,10 +1893,14 @@ void handleReset()
       statusCode = 200;
     }
     server.send(statusCode, "text/html", content);
+    content = "";
   }
   else if (param == "esp")
   {
-    ESP.restart();
+    countRestart = 200;
+    content = "{\"status\":\"OK - resetting...\"}";
+    statusCode = 200;
+    server.send(statusCode, "text/html", content);
   }
   else if (param == "pic")
   {
@@ -1895,12 +1912,14 @@ void handleReset()
     uartSemaphor = 0;
     statusCode = 200;
     server.send(statusCode, "text/html", content);
+    content = "";
   }
   else
   {
-    content = "{\"invreq  use device=esp  or  device=pic\"}";
+    content = "{\"invreq  use device=esp  or  device=pic  or  device=mqtt\"}";
     statusCode = 200;
     server.send(statusCode, "text/html", content);
+    content = "";
   }
 }
 // =============================================================================================
@@ -1910,6 +1929,7 @@ void handleReset()
 // =============================================================================================
 void handleStatus()
 {
+  if (firstTime == 0) setFirst();
   char temp[38];
   content = "<!DOCTYPE HTML>\r\n<html>Hello from ESP_" _MODO "GATE " _FW_VERSION;
   content += " at ";
@@ -2030,6 +2050,10 @@ void handleStatus()
       content += "mqtt model: DOMOTICZ";
     else if (domoticMode == 'h')
       content += "mqtt model: HOMEASSISTANT";
+    else if (domoticMode == 'D')
+      content += "mqtt model: DOMOTICZ 1-2";
+    else if (domoticMode == 'H')
+      content += "mqtt model: HOMEASSISTANT 1-2";
     else
       content += "mqtt model: GENERIC";
     content += "</li>";
@@ -2079,6 +2103,7 @@ void handleStatus()
   content += "</ol>";
   content += "</form></html>";
   server.send(200, "text/html", content);
+  content = "";
 }
 // =============================================================================================
 
@@ -2518,14 +2543,20 @@ void manualInput(char prefix)
 // -----------------------------------------------------------------------------------------------------------------------------------------------
 void setup() {
 
+  char forceAP = 0;
+  char jumperOpen;
+
   //  system_update_cpu_freq(160);
   //  unsigned char frq = ESP.getCpuFreqMHz(); // returns the CPU frequency in MHz as an unsigned 8-bit integer
 
   wifi_station_set_hostname( _modo "gate" );
 
-//  pinMode(LED_BUILTIN, OUTPUT);
-  pinMode(2, INPUT);
-  pinMode(0, OUTPUT);
+  Serial.begin(115200, SERIAL_8N2);
+  while (!Serial) {
+    ;
+  }
+  Serial.flush();
+
   // aspetta 15 secondi perche' con l'assorbimento iniziale di corrente esp8266 fa disconnettere l'adattatore seriale
   int pauses = 0;
   {
@@ -2535,18 +2566,19 @@ void setup() {
       delay(100);            // wait 100ms
     }
   }
+//===============================jumper test========================================
+//  jumperOpen = 0;
+  pinMode(0, INPUT);
+  pinMode(2, OUTPUT);
+  digitalWrite(2, LOW); // A0 OUTPUT BASSO
+  delay(20);
+  jumperOpen = digitalRead(0); //  == 1 jumper aperto
+  digitalWrite(2, HIGH); // A0 OUTPUT ALTO
+  pinMode(LED_BUILTIN, OUTPUT);
 
-  Serial.begin(115200, SERIAL_8N2);
-  while (!Serial) {
-    ;
-  }
-  Serial.flush();
-
+  
   EEPROM.begin(MAXEEPROM);
-
-  digitalWrite(0, LOW); // A0 OUTPUT BASSO
-  delay(10);
-
+//===============================================================================
 #ifdef DEBUG
   Serial.println();
   Serial.println();
@@ -2622,6 +2654,17 @@ void setup() {
 
   // read eeprom for ssid and pass
   Serial.print("Read EEPROM ssid: ");
+#else
+
+//  Serial.setTimeout(5000);
+  char serin[4];
+  Serial.setTimeout(1000);
+  Serial.readBytes(serin, 1);
+  if ((serin[0] == 'A') || (serin[0] == 'a'))
+  {
+    forceAP = 1;
+    Serial.println("AP mode");
+  }
 #endif
 
 
@@ -2744,17 +2787,18 @@ void setup() {
 #ifdef DEBUG
   Serial.write("@MA");  // set SCSgate/KNXgate ascii mode
 #else
-  Serial.write("@MX");  // set SCSgate/KNXgate hex mode
+  setFirst();
+//  Serial.write("@MX");  // set SCSgate/KNXgate hex mode
 #endif
   delay(50);            // wait 50ms
 
+#ifdef DEBUG
   if (Serial.find("k") == 0)
   {
-#ifdef DEBUG
     //  Serial.print("Gate error ");
-#endif
     //  ledError(1);
   }
+#endif
 
   Serial.write("@b");   // clear SCSgate/KNXgate buffer
 
@@ -2793,14 +2837,14 @@ void setup() {
 
 
 #ifdef DEBUG
-  if (digitalRead(2) == 0)
+  if (jumperOpen == 0)
     Serial.println("Pin 2 force AP mode - ignored...");
 #endif
 
 #ifdef DEBUG
   if (( esid.length() > 1 ) && (forceAP == 0)) // dati in eeprom, jumper ignorato, for
 #else
-  if (( esid.length() > 1 ) && (digitalRead(2) == 1) && (forceAP == 0)) // dati in eeprom, jumper assente, forzatura non digitata
+  if (( esid.length() > 1 ) && (jumperOpen == 1) && (forceAP == 0)) // dati in eeprom, jumper assente, forzatura non digitata
 #endif
   {                                                         // connessione al router
     WiFi.begin(esid.c_str(), epass.c_str());
@@ -3253,7 +3297,7 @@ void setup() {
       // CONNESSIONE WIFI FALLITA . REBOOT
       ESP.restart();
     }
-  } //  (( esid.length() > 1 ) && (digitalRead(2) == 1) && (forceAP == 0)) // connessione al router
+  } //  (( esid.length() > 1 ) && (jumperOpen == 1) && (forceAP == 0)) // connessione al router
   else
   {
     // access point mode
@@ -3383,13 +3427,18 @@ String tcpJarg(char * mybuffer, char * argument)
 // -----------------------------------------------------------------------------------------------------------------------------------------------
 void loop() {
 
-  long now = millis();
+  now = (signed int)millis();
 
 #ifdef DEBUG
   counter++;
   counter = 0;
 #endif
 
+  if  (countRestart > 0)
+  {
+    countRestart--;
+    if (countRestart == 0)  ESP.restart();
+  }
 
       // ==================================== TCP server ====================================================
 #ifdef USE_TCPSERVER
@@ -3431,7 +3480,9 @@ void loop() {
     char device  = 0;
     char devtype = 0;
     char deviceX = 0;
+#ifdef KNX
     char linesector;
+#endif
     char nomeDevice[6];
     char AlexaDescr[21];
 
@@ -3458,7 +3509,9 @@ void loop() {
     {
       String busid = tcpJarg(tcpBuffer,"\"device\""); // bus id
       deviceX = ixOfDevice(&busid[0]);
+#ifdef KNX
       linesector = device_BUS_id[deviceX].linesector;
+#endif
       device = device_BUS_id[deviceX].address;
       devtype = device_BUS_id[deviceX].type;
       
@@ -3497,9 +3550,10 @@ void loop() {
       {
         busid += "  ";
         deviceX = ixOfDeviceNew(&busid[0]);
+#ifdef KNX
         linesector = device_BUS_id[deviceX].linesector;
+#endif
         device = device_BUS_id[deviceX].address;
-//      devtype = device_BUS_id[deviceX].type;
 
         if (deviceX)
         {
@@ -3517,24 +3571,28 @@ void loop() {
           devtype = (char) stype.toInt();
           device_BUS_id[deviceX].type = devtype;
              
-          String smaxpos = tcpJarg(tcpBuffer,"\"maxp\"");
           if (devtype == 9)
           {
+            String smaxpos = tcpJarg(tcpBuffer,"\"maxp\"");
             char *ch;
             maxp.Val = (int)strtoul(&smaxpos[0], &ch, 10);
-            requestBuffer[requestLen++] = '§';
-            requestBuffer[requestLen++] = 'U';
-            requestBuffer[requestLen++] = '8';
+          }
+          else
+            maxp.Val = 0;
+            
+          requestBuffer[requestLen++] = '§';
+          requestBuffer[requestLen++] = 'U';
+          requestBuffer[requestLen++] = '8';
 #ifdef KNX
-            requestBuffer[requestLen++] = linesector;
+          requestBuffer[requestLen++] = linesector;
 #endif
-            requestBuffer[requestLen++] = device;     // device id
-            requestBuffer[requestLen++] = devtype;    // device type
-            requestBuffer[requestLen++] = maxp.byte.HB;    // max position H
-            requestBuffer[requestLen++] = maxp.byte.LB;    // max position L
-            immediateSend();
-            immediateReceive('k');
-          } // devtype == 9
+          requestBuffer[requestLen++] = device;     // device id
+          requestBuffer[requestLen++] = devtype;    // device type
+          requestBuffer[requestLen++] = maxp.byte.HB;    // max position H
+          requestBuffer[requestLen++] = maxp.byte.LB;    // max position L
+          immediateSend();
+          immediateReceive('k');
+
 #ifdef DEBUG 
           sprintf(tcpBuffer, "{\"device\":\"%02X\",\"type\":\"%d\",\"maxp\":\"%d\"\
                             ,\"descr\":\"%s\"}",device,devtype,maxp.Val,AlexaDescr);
@@ -3553,13 +3611,26 @@ void loop() {
         immediateSend();
         immediateReceive('k');
       }  // cover == "false"
+      
+      String devclear = tcpJarg(tcpBuffer,"\"devclear\"");
+      if (devclear == "true")
+      {
+        for (int i = 0; i < DEV_NR; ++i)
+        {
+          EEPROM.write((int) i * E_ALEXA_DESC_LEN + E_ALEXA_DESC_DEVICE, 0);
+	      device_BUS_id[i].Val = 0;
+        }
+        WriteEEP((char) 0, (int) E_MQTT_TABDEVICES, (int) DEV_NR * E_MQTT_TABLEN);
+      }  // devclear == "true"
+      
 
       sprintf(tcpBuffer, "#ok");
       buflen = 0;
       while (tcpBuffer[buflen]) buflen++;
       tcpclient.write(tcpBuffer, buflen);
+      
       WriteEEP((char*)&device_BUS_id[0], E_MQTT_TABDEVICES, (int) DEV_NR * E_MQTT_TABLEN);
-      EEPROM.commit();
+//    EEPROM.commit();
       tcpclient.flush();
     }	// #putdevice
     else
@@ -3573,7 +3644,9 @@ void loop() {
         devtype = device_BUS_id[deviceX].type;
         if (device_BUS_id[deviceX].address)
         {
+#ifdef KNX
           linesector = device_BUS_id[deviceX].linesector;
+#endif
           device = DeviceOfIx(deviceX, nomeDevice);
           String alexadescr = descrOfIx(deviceX);
           alexadescr.toCharArray(AlexaDescr, 21);  
@@ -3642,7 +3715,9 @@ void loop() {
       devtype = device_BUS_id[deviceX].type;
       if (device_BUS_id[deviceX].address)
       {
+#ifdef KNX
           linesector = device_BUS_id[deviceX].linesector;
+#endif
           device = DeviceOfIx(deviceX, nomeDevice);
           String alexadescr = descrOfIx(deviceX);
           alexadescr.toCharArray(AlexaDescr, 21);  
@@ -3699,6 +3774,12 @@ void loop() {
       if ((uart == "tcp")  && (tcpuart == 0))
       {
         tcpuart = 1;
+      }
+
+      String ecommit = tcpJarg(tcpBuffer,"\"commit\"");
+      if (ecommit == "true")
+      {
+        EEPROM.commit();
       }
 
       String freq = tcpJarg(tcpBuffer,"\"frequency\"");
@@ -3763,20 +3844,30 @@ void loop() {
 #ifdef USE_OTA
   if (ArduinoOTAflag == 1)
   {
-    if (now - prevTime > 100)
+#ifdef BLINKLED
+    digitalWrite(LED_BUILTIN, HIGH); // spento
+#endif
+    if (now - prevTime > 99)  // 100mS
     {
       prevTime = now;
       ArduinoOTA.handle();
    #ifdef BLINKLED
       ledCtr++;
-      if (ledCtr > 9)
+      if (connectionType == 0)  // router - 1sec
       {
-        ledCtr = 0;
-        digitalWrite(LED_BUILTIN, LOW);
+        if (ledCtr > 9)
+        {
+          ledCtr = 0;
+          digitalWrite(LED_BUILTIN, LOW); // acceso
+        }
       }
-      else
+      else    // AP - 0.3sec
       {
-        digitalWrite(LED_BUILTIN, HIGH);
+        if (ledCtr > 2)
+        {
+          ledCtr = 0;
+          digitalWrite(LED_BUILTIN, LOW); // acceso
+        }
       }
    #endif
     }
@@ -3793,8 +3884,7 @@ void loop() {
       if (!client.connected())
       {
         mqttopen = 1;
-        lastMsg  = 0;
-        now  = 0;
+        lastMsg  = now;
       }
     }
 
@@ -3809,10 +3899,9 @@ void loop() {
 
     if (mqttopen == 1)
     {
-      if (now - lastMsg > 10000)
+      if ((now - lastMsg) > 10000)
       { // nuova versione - controllo connessione mqtt solo ogni 10 secondi
         lastMsg = now;         //                per evitare overload
-        lastMsg += 100;        // per gestire overflow
 #ifdef DEBUG
         Serial.println("mqtt not connected");
 #endif
@@ -4082,6 +4171,7 @@ void loop() {
       httpClient.begin(content);
       int httpCode = httpClient.GET();                                  //Send the request
       httpClient.end();   //Close connection
+      content = "";
     }
   } // httpResp == "a"
   // --------------------- FINE RISPOSTA HTTP -------------------------------------------
@@ -4093,10 +4183,17 @@ void loop() {
   // =========================================== M Q T T  PUBLISH=================================================
 
 #ifdef SCS
+  // ------------[0xF3] [D] <index/device> <type> ----------------------- CENSIMENTO DEVICES -------------
+  if ((replyLen == 4) && (devIx > 0) && (replyBuffer[0] == 0xF3) && (replyBuffer[1] == DEVICEREQUEST)) // started from handleMqttDevices
+  {
+    devIx   = replyBuffer[2];
+    char device = replyBuffer[2];
+    char devtype = replyBuffer[3];
+#endif
+#ifdef SCS_XX
   // ------------[0xF4] [D] <index> <device> <type> ----------------------- CENSIMENTO DEVICES -------------
   if ((replyLen == 5) && (devIx > 0) && (replyBuffer[0] == 0xF4) && (replyBuffer[1] == DEVICEREQUEST)) // started from handleMqttDevices
   {
-    char devCall = devIx;
     devIx   = replyBuffer[2];
     char device = replyBuffer[3];
     char devtype = replyBuffer[4];
@@ -4399,14 +4496,14 @@ void loop() {
       {
         if (action == 0x08)
         {
-          if (domoticMode == 'h')
+          if ((domoticMode == 'h') || (domoticMode == 'H'))
             payload = "open";
           else
             payload = "OFF";
         }
         else if (action == 0x09)
         {
-          if (domoticMode == 'h')
+          if ((domoticMode == 'h') || (domoticMode == 'H'))
             payload = "closed";
           else
             payload = "ON";
@@ -4456,9 +4553,13 @@ void loop() {
       devtype = device_BUS_id[devx].type;
       if ((devtype < 0x01) || (devtype > 8))
         devtype = 0x01;
+      
+      if (devtype == 0x01)    // luce non va considerato pari/dispari...
+      {
+        deva.address = replyBuffer[4];      // ripristina indirizzo originale
+      }
 
-      if ((devx != 0) && (devtype != 0))
-        //    if ((device != 0) && (devtype != 0) && ((device != prevDevice) || (action != prevAction)))
+      if ((domoticMode == 'H') || (domoticMode == 'D') || ((devx) && (devtype))) // - H: DEFAULT SWITCH
       { // device valido & evitare doppioni
         prevDevice = devx;
         prevAction = action;
@@ -4504,14 +4605,14 @@ void loop() {
           {
             if (action == 0x80)
             {
-              if (domoticMode == 'h')
+              if ((domoticMode == 'h') || (domoticMode == 'H'))
                 payload = "open";
               else
                 payload = "OFF";
             }
             else if (action == 0x81)
             {
-              if (domoticMode == 'h')
+              if ((domoticMode == 'h') || (domoticMode == 'H'))
                 payload = "closed";
               else
                 payload = "ON";
@@ -4864,7 +4965,9 @@ char ixOfDeviceNew(char device)
     else
     if (device_BUS_id[x].address == 0)
     { 
+#ifdef KNX
         device_BUS_id[x].linesector = 0;
+#endif
         device_BUS_id[x].address = device;
         device_BUS_id[x].type = 1;
         device_BUS_id[x].alexa_id = 0;
@@ -4892,7 +4995,9 @@ char ixOfDeviceNew(char * scsdevice)
     else
     if (device_BUS_id[x].address == 0)
     { 
+#ifdef KNX
         device_BUS_id[x].linesector = 0;
+#endif
         device_BUS_id[x].address = device;
         device_BUS_id[x].type = 1;
         device_BUS_id[x].alexa_id = 0;
