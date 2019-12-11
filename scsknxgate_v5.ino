@@ -1,17 +1,19 @@
 //----------------------------------------------------------------------------------
 #define _FW_NAME     "SCSKNXGATE"
-#define _FW_VERSION  "VER_5.0583 "
+#define _FW_VERSION  "VER_5.0585 "
 #define _ESP_CORE    "esp8266-2.5.2"
 //----------------------------------------------------------------------------------
 //
 //        ---- attenzione - porta http: 8080 <--se alexaParam=y--------------
 //
 //----------------------------------------------------------------------------------
-// revisione KNX - gestione indirizzo a 2 bytes nelle tabelle
+// 5.0585 corretto errore su linesector da alexa fauxmo
+// 5.0584 timeout wifi 5 minuti: reset
+// 5.0582 revisione KNX - gestione indirizzo a 2 bytes nelle tabelle
 //----------------------------------------------------------------------------------
 
-//#define KNX
-#define SCS
+#define KNX
+//#define SCS
 //#define DEBUG
 //#define MQTTLOG
 #define BLINKLED     // funziona solo su ESP01S //
@@ -216,7 +218,7 @@ char mqtt_log = 0;
 char mqtt_retrylimit = 24; //x 10=240sec (4min) -limite oltre il quale si resetta per broker non disponibile
 char domoticMode;    // d=as domoticz      h=as homeassistant      maiuscolo=pari dispari
 char alexaParam = 0;
-char countRestart = 0;
+int  countRestart = 0;
 
 WiFiClient espClient;
 
@@ -245,6 +247,9 @@ char uartSemaphor = 0;
 signed int now;
 signed int prevTime = 0;  
 signed int lastMsg = 0;
+signed int lastCheck = 0; 
+char       badCheck = 0;  
+
 
 #ifdef DEBUG
 int  counter;
@@ -421,9 +426,15 @@ void launchWeb(int webtype)
 // -----------------------------------------------------------------------------------------------------------------------------------------------
 void setupAP(void)
 {
+#ifdef DEBUG
+  Serial.println("AP start");
+#endif
   WiFi.mode(WIFI_STA);
-  WiFi.disconnect();
+//  WiFi.disconnect();
   delay(100);
+#ifdef DEBUG
+  Serial.println("now scan");
+#endif
   int n = WiFi.scanNetworks();
 #ifdef DEBUG
   Serial.println("scan done");
@@ -2757,11 +2768,11 @@ void setup() {
   ReadStream((char*)&device_BUS_id[0], E_MQTT_TABDEVICES, (int) DEV_NR * E_MQTT_TABLEN, 0);  // tipo=0 binary   1:ascii
 
 
-  Serial.write('@');    // set led lamps
+  Serial.write('@');    // 
   Serial.write(0xF0);   // set led lamps low-freq (client mode)
   delay(10);            // wait 10ms
   Serial.flush();
-  Serial.write('@');    // set led lamps
+  Serial.write('@');    // 
   Serial.write('q');    // query PIC fw version
   delay(50);            // wait 50ms
   char sl = 0;
@@ -2842,12 +2853,18 @@ void setup() {
 #endif
 
 #ifdef DEBUG
-  if (( esid.length() > 1 ) && (forceAP == 0)) // dati in eeprom, jumper ignorato, for
+//  if (( esid.length() > 1 ) && (forceAP == 0)) // dati in eeprom, jumper ignorato, for
+  if (forceAP == 0) // dati in eeprom, jumper ignorato, for
 #else
-  if (( esid.length() > 1 ) && (jumperOpen == 1) && (forceAP == 0)) // dati in eeprom, jumper assente, forzatura non digitata
+//  if (( esid.length() > 1 ) && (jumperOpen == 1) && (forceAP == 0)) // dati in eeprom, jumper assente, forzatura non digitata
+  if ((jumperOpen == 1) && (forceAP == 0)) // dati in eeprom, jumper assente, forzatura non digitata
 #endif
+// =========================================================================================
+//        CONNESSIONE  AL  ROUTER 
+// =========================================================================================
   {                                                         // connessione al router
-    WiFi.begin(esid.c_str(), epass.c_str());
+    WiFi.begin(esid.c_str(), epass.c_str());   
+// =========================================================================================
 
     if ((local_ip[0] > 0) && (local_ip[0] < 255))
     {
@@ -3062,7 +3079,7 @@ void setup() {
 
 #ifdef KNX
 // comando §y<source><linesector><destaddress><command>
-                  linesector = EEPROM.read(E_MQTT_TABDEVICES);
+////                linesector = EEPROM.read(E_MQTT_TABDEVICES);
                   serObuffer[bufNr][serOlen[bufNr]++] = 0x01;       // from device
                   serObuffer[bufNr][serOlen[bufNr]++] = linesector; // to   device line-sector
                   serObuffer[bufNr][serOlen[bufNr]++] = device;     // to   device address
@@ -3195,7 +3212,7 @@ void setup() {
 
 #ifdef KNX
 // comando §y<source><linesector><destaddress><command>
-                  linesector = EEPROM.read(E_MQTT_TABDEVICES);
+////                linesector = EEPROM.read(E_MQTT_TABDEVICES);
                   serObuffer[bufNr][serOlen[bufNr]++] = 0x01;       // from device
                   serObuffer[bufNr][serOlen[bufNr]++] = linesector; // to   device line-sector
                   serObuffer[bufNr][serOlen[bufNr]++] = device;     // to   device address
@@ -3294,17 +3311,23 @@ void setup() {
     }
     else
     {
+      // =================================================================================================
       // CONNESSIONE WIFI FALLITA . REBOOT
+      // =================================================================================================
       ESP.restart();
     }
   } //  (( esid.length() > 1 ) && (jumperOpen == 1) && (forceAP == 0)) // connessione al router
   else
   {
+    // =================================================================================================
     // access point mode
+    // =================================================================================================
     setupAP();
     Serial.write('@');   // set led lamps
     Serial.write(0xF2);  // set led lamps high-freq (AP mode)
   }
+
+
 
 
 
@@ -3873,6 +3896,44 @@ void loop() {
     }
   }
 #endif
+
+
+
+  // ======================================= WIFI KEEP ALIVE ===========================================
+
+  if (connectionType == 0) // wifi router mode
+  {
+    if (WiFi.status() == WL_CONNECTED)
+    {
+        lastCheck = now; 
+        badCheck = 0;    
+    }
+    else
+    {
+#ifdef BLINKLED
+      digitalWrite(LED_BUILTIN, LOW); // acceso
+#endif
+      if ((now - lastCheck) > 10000)
+      { // controllo connessione wifi  ogni 10 secondi
+        lastCheck = now; 
+        badCheck++;  
+//      if (badCheck > 3)    // 30 secondi 
+        if (badCheck > 30)   // 5 minuti 
+        { 
+          Serial.write('@');    // 
+          Serial.write(0xFF);   // set led lamps zero
+          delay(100);           // wait 100ms
+          Serial.write('@');    // 
+          Serial.write('|');    // 
+          Serial.write('|');    // 
+          delay(100);           // wait 100ms
+          countRestart = 2000;
+          badCheck = 0;
+        }
+      }
+    }
+  }    
+    
 
   // ======================================= MQTT KEEP ALIVE ===========================================
   if (mqttopen != 0)
