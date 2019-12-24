@@ -1,12 +1,14 @@
 //----------------------------------------------------------------------------------
 #define _FW_NAME     "SCSKNXGATE"
-#define _FW_VERSION  "VER_5.0585 "
+#define _FW_VERSION  "VER_5.0587 "
 #define _ESP_CORE    "esp8266-2.5.2"
 //----------------------------------------------------------------------------------
 //
 //        ---- attenzione - porta http: 8080 <--se alexaParam=y--------------
 //
 //----------------------------------------------------------------------------------
+// 5.0587 auto inizializzazione eeprom
+// 5.0586 serial options at startup: a(ap) - r(router) - e(eprom clear) - s(speed test)
 // 5.0585 corretto errore su linesector da alexa fauxmo
 // 5.0584 timeout wifi 5 minuti: reset
 // 5.0582 revisione KNX - gestione indirizzo a 2 bytes nelle tabelle
@@ -208,6 +210,7 @@ unsigned char ArduinoOTAflag = 0;
 char ledCtr = 0;
 #endif
 // =======================================================================================================================
+char serIniOption = 0;
 char mqtt_server[32];
 char mqtt_user[32];
 char mqtt_password[20];
@@ -306,14 +309,15 @@ WiFiUDP udpConnection;
 
 // -----------------------------------------------------------------------------------------------------------------------------------------------
 #define MAXEEPROM 4096  // 4096 is the MAX eeprom size in esp8266 
+#define EESIGNATURE     0x5A 
 
 #define E_SSID   0         // ssid wifi  max 32
 #define E_PASSW  32        // passw wifi max 32
 #define E_IPADDR 64        // my ipaddr  max 16
 #define E_ROUTIP 80        // router ip  max 16
 #define E_PORT   96        // udp port   max 6
-#define E_CALLBACK    102  // http callb max 100
-
+#define E_CALLBACK    102  // http callb max 98
+#define E_EESIGNATURE 200  //            max 1 
 #define E_MQTT_BROKER 202  // mqtt_server   max 32
 #define E_MQTT_PORT   234  // mqtt_port     max 6
 #define E_DOMOTICMODE 240  // domotic mode  max 1
@@ -1446,7 +1450,7 @@ void handleBackSetting()
   httpback.toCharArray(httpCallback, sizeof(httpCallback));
 
   WriteEEP(httpCallback, E_CALLBACK);
-//  WriteStream(httpCallback, E_CALLBACK, 100);
+//  WriteStream(httpCallback, E_CALLBACK, 98);
   EEPROM.commit();
 
   content = "{\"Status\":\"OK\"}";
@@ -2589,6 +2593,25 @@ void setup() {
 
   
   EEPROM.begin(MAXEEPROM);
+  
+  char eeSignature = EEPROM.read(E_EESIGNATURE);
+  if (eeSignature != EESIGNATURE)
+  {
+    Serial.println("eeinit");
+    int we = 0;
+    while (we < 4096)
+    {
+      EEPROM.write(we, 0);
+      we++;
+    }
+	EEPROM.write(E_EESIGNATURE, EESIGNATURE);
+	EEPROM.write(E_DOMOTICMODE, 'H');
+	EEPROM.write(E_MQTT_LOG, 'n');
+	EEPROM.write(E_MQTT_PERSISTENCE, 'y');
+	EEPROM.write(E_ALEXA, 'n');
+	
+    EEPROM.commit();  
+  }
 //===============================================================================
 #ifdef DEBUG
   Serial.println();
@@ -2597,11 +2620,11 @@ void setup() {
 
   Serial.println("Press  A for start as AP,  E for eeprom init,  S for search speed");
   Serial.setTimeout(5000);
-  char serin[4];
-  Serial.readBytes(serin, 1);
+  Serial.readBytes(&serIniOption, 1);
+  if ((serIniOption > 64) && (serIniOption < 91)) serIniOption += 32;
   Serial.setTimeout(1000);
 
-  if (serin[0] == 'E')
+  if (serIniOption == 'e')
   {
     int we = 0;
     while (we < 4096)
@@ -2610,13 +2633,13 @@ void setup() {
       we++;
     }
     EEPROM.commit();
-    Serial.println("eeprom init OK");
+    Serial.println("e: eeprom init OK");
     forceAP = 1;
     Serial.println("Forced AP mode");
   }
 
 /*
-  if (serin[0] == 'S')
+  if (serIniOption == 's')
   {
     int32_t time1;
 //  char ixOfDevice(DEVADDR device)
@@ -2648,7 +2671,7 @@ void setup() {
     lups = nts;
     time2 = asm_ccount();
 //    Serial.printf("\r\n- table search (1000 devcs): %d mS\r\n", (millis() - last)); // 
-    Serial.printf("\r\n- table search (%d devcs): %d tcks\r\n", lups, time2 - time1); //     
+    Serial.printf("\r\ns: - table search (%d devcs): %d tcks\r\n", lups, time2 - time1); //     
     Serial.printf(" - %d uS\r\n", (time2 - time1)/80); //     
     time2 = asm_ccount();
     Serial.printf("\r\n- table search (%d devcs): %d tcks\r\n", lups, time2 - time1); //     
@@ -2657,10 +2680,15 @@ void setup() {
 */
 
 
-  if ((serin[0] == 'A') || (serin[0] == 'a'))
+  if (serIniOption == 'a')
   {
     forceAP = 1;
-    Serial.println("Forced AP mode");
+    Serial.println("a: Forced AP mode");
+  }
+  if (serIniOption == 'r')
+  {
+    forceAP = 0;
+    Serial.println("r: Display router mode");
   }
 
   // read eeprom for ssid and pass
@@ -2668,15 +2696,23 @@ void setup() {
 #else
 
 //  Serial.setTimeout(5000);
-  char serin[4];
   Serial.setTimeout(1000);
-  Serial.readBytes(serin, 1);
-  if ((serin[0] == 'A') || (serin[0] == 'a'))
+  Serial.readBytes(&serIniOption, 1);
+  if ((serIniOption > 64) && (serIniOption < 91)) serIniOption += 32;
+  if (serIniOption == 'a')
   {
     forceAP = 1;
-    Serial.println("AP mode");
+    Serial.println("a: AP mode");
+  }
+  if (serIniOption == 'r')
+  {
+    forceAP = 0;
+    Serial.println("r: Display router mode");
   }
 #endif
+
+
+
 
 
 
@@ -2820,19 +2856,25 @@ void setup() {
   String qip = ReadStream(&qip[0], E_IPADDR, 16, 2);  // tipo=0 binary   1:ascii   2=string
   local_ip.fromString(qip);
 
-#ifdef DEBUG
-  Serial.println("");
-  Serial.print("local ip=");
-  Serial.println(local_ip);
+#ifndef DEBUG
+  if (serIniOption == 'r')
 #endif
+  {
+    Serial.println("");
+    Serial.print("local ip=");
+    Serial.println(local_ip);
+  }
 
   String qrip = ReadStream(&qrip[0], E_ROUTIP, 16, 2);  // tipo=0 binary   1:ascii  2=string
   router_ip.fromString(qrip);
 
-#ifdef DEBUG
+#ifndef DEBUG
+  if (serIniOption == 'r')
+#endif
+  {
   Serial.print("router ip=");
   Serial.println(router_ip);
-#endif
+  }
 
   String qport = ReadStream(&qport[0], E_PORT, 6, 2);  // tipo=0 binary   1:ascii   2=string
   udpLocalPort = qport.toInt();
