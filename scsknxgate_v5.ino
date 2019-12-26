@@ -1,12 +1,13 @@
 //----------------------------------------------------------------------------------
 #define _FW_NAME     "SCSKNXGATE"
-#define _FW_VERSION  "VER_5.0587 "
+#define _FW_VERSION  "VER_5.0588 "
 #define _ESP_CORE    "esp8266-2.5.2"
 //----------------------------------------------------------------------------------
 //
 //        ---- attenzione - porta http: 8080 <--se alexaParam=y--------------
 //
 //----------------------------------------------------------------------------------
+// 5.0588 knx - trattamento indirizzi 00
 // 5.0587 auto inizializzazione eeprom
 // 5.0586 serial options at startup: a(ap) - r(router) - e(eprom clear) - s(speed test)
 // 5.0585 corretto errore su linesector da alexa fauxmo
@@ -341,7 +342,12 @@ typedef union _DEVICE    {
         char alexa_id;		      
         };
   struct {
+#ifdef KNX
         int  addressW;			      
+#endif
+#ifdef SCS
+        char addressW;			      
+#endif
         char Type;		      
         char Alexa_id;		      
         };
@@ -997,7 +1003,7 @@ void handleMqttDevices()  // inizio processo di censimento automatico dei device
         char devtype;
         char nomeDevice[6];
         char devx = 1;
-        while ((devx < DEV_NR) && (device_BUS_id[devx].address))
+        while ((devx < DEV_NR) && (device_BUS_id[devx].addressW))
         {
           devtype = device_BUS_id[devx].type;
           if ((devtype > 0) && (devtype < 32))
@@ -1047,7 +1053,7 @@ void handleMqttDevices()  // inizio processo di censimento automatico dei device
         char devtype;
         char nomeDevice[6];
 		char devx = 1;
-        while ((devx < DEV_NR) && (device_BUS_id[devx].address))
+        while ((devx < DEV_NR) && (device_BUS_id[devx].addressW))
         {
           devtype = device_BUS_id[devx].type;
           if ((devtype > 0) && (devtype < 32))
@@ -1239,9 +1245,9 @@ void handleDeviceName()  // denominazione devices scoperti - per alexa
 //      deviceX = 1;
   devtype = device_BUS_id[deviceX].type;
   
-  if ((deviceX >= DEV_NR)  || (device_BUS_id[deviceX].address == 0)) devtype=0;
+  if ((deviceX >= DEV_NR)  || (device_BUS_id[deviceX].addressW == 0)) devtype=0;
 
-  if (device_BUS_id[deviceX].address > 0)
+  if (device_BUS_id[deviceX].addressW > 0)
   {
     device = DeviceOfIx(deviceX, nomeDevice);
     AlexaDescr = descrOfIx(deviceX);
@@ -2081,7 +2087,7 @@ void handleStatus()
     char nomeDevice[6];
     char device;
     char devx = 1;
-    while ((devx < DEV_NR) && (device_BUS_id[devx].address))
+    while ((devx < DEV_NR) && (device_BUS_id[devx].addressW))
     {
       devtype = device_BUS_id[devx].type;
       if ((devtype > 0) && (devtype < 32))
@@ -2969,7 +2975,7 @@ void setup() {
         
         char devtype;
         char devx = 1;
-        while ((devx < DEV_NR) && (device_BUS_id[devx].address))
+        while ((devx < DEV_NR) && (device_BUS_id[devx].addressW))
         {
           devtype = device_BUS_id[devx].type;
           if ((devtype > 0) && (devtype < 32))
@@ -3704,10 +3710,10 @@ void loop() {
 // ------------------------------------------------------------------------------------------------------
     {
       deviceX = 1;
-      while (device_BUS_id[deviceX].address)
+      while (device_BUS_id[deviceX].addressW)
       {
         devtype = device_BUS_id[deviceX].type;
-        if (device_BUS_id[deviceX].address)
+        if (device_BUS_id[deviceX].addressW)
         {
 #ifdef KNX
           linesector = device_BUS_id[deviceX].linesector;
@@ -3778,7 +3784,7 @@ void loop() {
       }
 
       devtype = device_BUS_id[deviceX].type;
-      if (device_BUS_id[deviceX].address)
+      if (device_BUS_id[deviceX].addressW)
       {
 #ifdef KNX
           linesector = device_BUS_id[deviceX].linesector;
@@ -4506,7 +4512,7 @@ void loop() {
           payload = "OFF";
 
         devx = 1;
-        while ((devx < DEV_NR) && (device_BUS_id[devx].address))
+        while ((devx < DEV_NR) && (device_BUS_id[devx].addressW))
         {
           devtype = device_BUS_id[devx].type;
           if ((devtype == 1) || (devtype == 3))  // dimmer
@@ -4909,14 +4915,14 @@ char ixOfDeviceNew(char * knxdevice)
   *(knxdevice+2) = 0; // 2 caratteri
   char linsect = (char)strtoul(knxdevice, &ch, 16);
 
-  if ((device == 0) || (linsect == 0))  return 0;
+  if ((device == 0) && (linsect == 0))  return 0;
   
   while (x < DEV_NR)
   {
     if ((device_BUS_id[x].address == device) && (device_BUS_id[x].linesector == linsect))
         return x;
     else
-    if (device_BUS_id[x].address == 0)
+    if (device_BUS_id[x].addressW == 0)
     { 
         device_BUS_id[x].linesector = linsect;
         device_BUS_id[x].address = device;
@@ -4932,14 +4938,14 @@ char ixOfDeviceNew(char * knxdevice)
 char ixOfDeviceNew(char linsect, char device)
 {
   char x = 1;
-  if ((device == 0) || (linsect == 0))  return 0;
+  if ((device == 0) && (linsect == 0))  return 0;
   
   while (x < DEV_NR)
   {
     if ((device_BUS_id[x].address == device) && (device_BUS_id[x].linesector == linsect))
         return x;
     else
-    if (device_BUS_id[x].address == 0)
+    if (device_BUS_id[x].addressW == 0)
     { 
         device_BUS_id[x].linesector = linsect;
         device_BUS_id[x].address = device;
@@ -4967,7 +4973,7 @@ char ixOfDevice(char * knxdevice)
     if ((device_BUS_id[x].address == device) && (device_BUS_id[x].linesector == linsect))
         return x;
     else
-    if (device_BUS_id[x].address == 0)
+    if (device_BUS_id[x].addressW == 0)
 		return 0;
 	x++;
   }
@@ -4983,7 +4989,7 @@ char ixOfDevice(DEVADDR device)
     if ((device_BUS_id[x].address == device.address) && (device_BUS_id[x].linesector == device.linesector))
         return x;
     else
-    if (device_BUS_id[x].address == 0)
+    if (device_BUS_id[x].addressW == 0)
     return 0;
   x++;
   }
@@ -4999,7 +5005,7 @@ char ixOfDevice(char linsect, char device)
     if ((device_BUS_id[x].address == device) && (device_BUS_id[x].linesector == linsect))
         return x;
     else
-    if (device_BUS_id[x].address == 0)
+    if (device_BUS_id[x].addressW == 0)
     return 0;
   x++;
   }
