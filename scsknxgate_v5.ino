@@ -1,12 +1,14 @@
 //----------------------------------------------------------------------------------
 #define _FW_NAME     "SCSKNXGATE"
-#define _FW_VERSION  "VER_5.0588 "
+#define _FW_VERSION  "VER_5.0590 "
 #define _ESP_CORE    "esp8266-2.5.2"
 //----------------------------------------------------------------------------------
 //
 //        ---- attenzione - porta http: 8080 <--se alexaParam=y--------------
 //
 //----------------------------------------------------------------------------------
+// 5.0590 device type 11: generic device SCS (knx solo parzialmente)
+// 5.0589 gestione tapparelle su indirizzo principale pari 
 // 5.0588 knx - trattamento indirizzi 00
 // 5.0587 auto inizializzazione eeprom
 // 5.0586 serial options at startup: a(ap) - r(router) - e(eprom clear) - s(speed test)
@@ -14,9 +16,10 @@
 // 5.0584 timeout wifi 5 minuti: reset
 // 5.0582 revisione KNX - gestione indirizzo a 2 bytes nelle tabelle
 //----------------------------------------------------------------------------------
+//
 
-#define KNX
-//#define SCS
+//#define KNX
+#define SCS
 //#define DEBUG
 //#define MQTTLOG
 #define BLINKLED     // funziona solo su ESP01S //
@@ -154,6 +157,7 @@ unsigned int http_port = 80;
 #define NEW_CONFIG_TOPIC "/config";
 #define NEW_COVERPCT_TOPIC  "homeassistant/cover/";
 #define NEW_SENSOR_TOPIC  "homeassistant/sensor/";
+#define NEW_GENERIC_TOPIC "homeassistant/generic/";
 
 #define NEW_DEVICE_NAME  "{\"name\": \""
 
@@ -199,6 +203,17 @@ unsigned int http_port = 80;
 #define     ALARM_ZONE_STATE MYPFX "/alarm/zone/state/"
 #define NEW_ALARM_ZONE_STATE "\",\"state_topic\": \"" ALARM_ZONE_STATE
 
+// generic:
+//  scs/generic/set/<to>      <from><type><cmd>   command to send
+//  scs/generic/from/<from>   <to><type><cmd>	  received
+//  scs/generic/to/<to>       <from><type><cmd>   received
+
+#define     GENERIC_SET   MYPFX "/generic/set/"
+#define NEW_GENERIC_SET   "\",\"command_topic\": \"" GENERIC_SET
+#define     GENERIC_FROM MYPFX "/generic/from/"
+#define NEW_GENERIC_FROM  "\",\"from_topic\": \"" GENERIC_FROM
+#define     GENERIC_TO   MYPFX "/generic/to/"
+#define NEW_GENERIC_TO    "\",\"to_topic\": \"" GENERIC_FROM
 
 #define NEW_DEVICE_END   "\"}";
 // =======================================================================================================================
@@ -338,7 +353,7 @@ typedef union _DEVICE    {
         char linesector;      
 #endif
         char address;	      
-        char type;		      
+        char deviceType;		      
         char alexa_id;		      
         };
   struct {
@@ -348,7 +363,7 @@ typedef union _DEVICE    {
 #ifdef SCS
         char addressW;			      
 #endif
-        char Type;		      
+        char DeviceType;		      
         char Alexa_id;		      
         };
   struct {
@@ -1005,7 +1020,7 @@ void handleMqttDevices()  // inizio processo di censimento automatico dei device
         char devx = 1;
         while ((devx < DEV_NR) && (device_BUS_id[devx].addressW))
         {
-          devtype = device_BUS_id[devx].type;
+          devtype = device_BUS_id[devx].deviceType;
           if ((devtype > 0) && (devtype < 32))
           {
             MQTTnewdevice(devx, nomeDevice);
@@ -1024,6 +1039,8 @@ void handleMqttDevices()  // inizio processo di censimento automatico dei device
               content += "cover";
             else if (devtype == 9)
               content += "coverpct";
+            else if (devtype == 11)
+              content += "generic";
             else if (devtype == 0x0E)
               content += "alarm board";
 
@@ -1055,7 +1072,7 @@ void handleMqttDevices()  // inizio processo di censimento automatico dei device
 		char devx = 1;
         while ((devx < DEV_NR) && (device_BUS_id[devx].addressW))
         {
-          devtype = device_BUS_id[devx].type;
+          devtype = device_BUS_id[devx].deviceType;
           if ((devtype > 0) && (devtype < 32))
           {
             DeviceOfIx(devx, (char *)nomeDevice);
@@ -1072,6 +1089,8 @@ void handleMqttDevices()  // inizio processo di censimento automatico dei device
               content += "dimmer";
             else if (devtype == 8)
               content += "cover";
+            else if (devtype == 11)
+              content += "generic";
             else if (devtype == 0x0E)
               content += "alarm board";
             else if (devtype == 9)
@@ -1201,10 +1220,10 @@ void handleDeviceName()  // denominazione devices scoperti - per alexa
           String stype = server.arg("type");
           char type = (char) stype.toInt();
           if (type == 0) type = 1;
-          devtype = device_BUS_id[deviceX].type;
+          devtype = device_BUS_id[deviceX].deviceType;
           if (type != devtype)
           {
-            device_BUS_id[deviceX].type = type;
+            device_BUS_id[deviceX].deviceType = type;
             devtype = type;
             EndMsg = "<li>UPDATED !!!</li>";
           }
@@ -1243,7 +1262,7 @@ void handleDeviceName()  // denominazione devices scoperti - per alexa
   deviceX++;
 //  if (device_BUS_id[deviceX].address == 0)
 //      deviceX = 1;
-  devtype = device_BUS_id[deviceX].type;
+  devtype = device_BUS_id[deviceX].deviceType;
   
   if ((deviceX >= DEV_NR)  || (device_BUS_id[deviceX].addressW == 0)) devtype=0;
 
@@ -1261,6 +1280,8 @@ void handleDeviceName()  // denominazione devices scoperti - per alexa
       TypeDescr = "4 dimmer";
     else if (devtype == 8)
       TypeDescr = "8 cover";
+    else if (devtype == 11)
+      TypeDescr = "11 generic";
     else if (devtype == 0x0E)
       TypeDescr = "E alarm board";
     else if (devtype == 9)
@@ -1734,6 +1755,66 @@ void MqttCallback(char* topic, byte* payload, unsigned int length)
       else
 
 
+  // --------------------------------------- GENERIC  -------------------------------------------
+  if (topicString.substring(0, sizeof(GENERIC_SET) - 1) == GENERIC_SET)
+  {
+    devtype = 11; // generic
+    rtopic = GENERIC_TO;
+    reply = 0;
+    dev[0] = *(topic + sizeof(GENERIC_SET) - 1);
+    dev[1] = *(topic + sizeof(GENERIC_SET));
+    
+    requestBuffer[requestLen++] = '§';
+    requestBuffer[requestLen++] = 'y';		// 0x79
+
+#ifdef SCS
+	char from;
+	char type;
+	
+    dev[2] = 0;
+    device = (char)strtoul(dev, &ch, 16);
+
+    packetBuffer[6] = 0;
+    command = (char)strtoul(&packetBuffer[4], &ch, 16);
+    packetBuffer[4] = 0;
+    type = (char)strtoul(&packetBuffer[2], &ch, 16);
+    packetBuffer[2] = 0;
+    from = (char)strtoul(&packetBuffer[0], &ch, 16);
+
+    requestBuffer[requestLen++] = device; // to   device
+    requestBuffer[requestLen++] = from;   // from device
+    requestBuffer[requestLen++] = type;   // type:command
+    requestBuffer[requestLen++] = command;// command
+#endif
+
+#ifdef KNX
+	word from;
+	
+    dev[2] = *(topic + sizeof(SWITCH_SET) + 1);
+    dev[3] = *(topic + sizeof(SWITCH_SET) + 2);
+    dev[4] = 0;
+    device = (word)strtoul(dev, &ch, 16);
+
+    packetBuffer[4] = 0;
+    command = (char)strtoul(&packetBuffer[2], &ch, 16);
+
+    packetBuffer[2] = 0;
+    from = (word)strtoul(&packetBuffer[0], &ch, 16);
+
+    requestBuffer[requestLen++] = lowByte(from);    // from device
+    requestBuffer[requestLen++] = highByte(device); // to   linesector
+    requestBuffer[requestLen++] = lowByte(device);  // to   device
+    requestBuffer[requestLen++] = command;          // command
+#endif
+      
+  }
+  // ----------------------------------------------------------------------------------------------
+  else
+
+
+
+
+
 
 
 
@@ -1776,10 +1857,15 @@ void MqttCallback(char* topic, byte* payload, unsigned int length)
           if (payloads.substring(0, 4) == "STOP")
           {
             command = 0x80;
+            
+// indirizzo deve essere dispari
+            if (!(device & 0x01)) device++;   // indirizzo dispari
           }
           else
           {
-            device++;   // indirizzo pari
+          
+// indirizzo deve essere pari
+            if (device & 0x01) device++;   // indirizzo pari
 
             if (payloads.substring(0, 2) == "ON")   // discesa - chiudi
               command = 0x81;
@@ -1861,6 +1947,7 @@ void MqttCallback(char* topic, byte* payload, unsigned int length)
       requestBuffer[requestLen++] = command;    // command (%)
     }
     else
+    if (devtype != 11)	// <====================not GENERIC=======================
     {
       requestBuffer[requestLen++] = '§';
       requestBuffer[requestLen++] = 'y';
@@ -2089,7 +2176,7 @@ void handleStatus()
     char devx = 1;
     while ((devx < DEV_NR) && (device_BUS_id[devx].addressW))
     {
-      devtype = device_BUS_id[devx].type;
+      devtype = device_BUS_id[devx].deviceType;
       if ((devtype > 0) && (devtype < 32))
       {
         devNr++;
@@ -2291,9 +2378,9 @@ char  MQTTnewdevice(char devIx, char* nomedevice)  // KNX
   if (mqttopen == 3)
   {
     if ((edesc[0] == 0) || (edesc[0] == 0xFF) || (edesc == ""))
-      MQTTnewdiscover(device_BUS_id[devIx].type, devicename, devicename);
+      MQTTnewdiscover(device_BUS_id[devIx].deviceType, devicename, devicename);
     else
-      MQTTnewdiscover(device_BUS_id[devIx].type, devicename, edesc);
+      MQTTnewdiscover(device_BUS_id[devIx].deviceType, devicename, edesc);
   }
   return devIx;
 }
@@ -2349,6 +2436,23 @@ char  MQTTnewdiscover(char devtype, char * addrDevice, String nomeDevice)
     payload += NEW_COVER_SET;
     payload += addrDevice;
     payload += NEW_COVER_STATE;
+    payload += addrDevice;
+    payload += NEW_DEVICE_END;
+  }
+  else if (devtype == 11) // D=define new device GENERIC <<<-----------------------------------------------
+  {
+    rc = 1;
+    topic   = NEW_GENERIC_TOPIC;
+    topic  += addrDevice;
+    topic  += NEW_CONFIG_TOPIC;
+
+    payload = NEW_DEVICE_NAME;
+    payload += nomeDevice;
+    payload += NEW_GENERIC_SET;
+    payload += addrDevice;
+    payload += NEW_GENERIC_FROM;
+    payload += addrDevice;
+    payload += NEW_GENERIC_TO;
     payload += addrDevice;
     payload += NEW_DEVICE_END;
   }
@@ -2660,7 +2764,7 @@ void setup() {
     {
       device_BUS_id[xa].linesector = 11;
       device_BUS_id[xa].address = 22;
-      device_BUS_id[xa].type = 1;
+      device_BUS_id[xa].deviceType = 1;
       xa++;
     }
     // test search table speed with ixofdevices()
@@ -2977,8 +3081,8 @@ void setup() {
         char devx = 1;
         while ((devx < DEV_NR) && (device_BUS_id[devx].addressW))
         {
-          devtype = device_BUS_id[devx].type;
-          if ((devtype > 0) && (devtype < 32))
+          devtype = device_BUS_id[devx].deviceType;
+          if ((devtype > 0) && (devtype < 11))
           {
             String edesc = descrOfIx(devx);
             if ((edesc != "") && (edesc[0] > ' '))
@@ -3071,7 +3175,7 @@ void setup() {
           else // an scs/knx device
           {
             char devix = alexa_BUS_ix[alexa_id];
-            char devtype = device_BUS_id[devix].type;
+            char devtype = device_BUS_id[devix].deviceType;
 //          char device = alexa_BUS_id[alexa_id];
             
 #ifdef DEBUG
@@ -3227,6 +3331,10 @@ void setup() {
 #endif
 #ifdef KNX
                     command = 0x80;
+                    
+// indirizzo deve essere dispari
+                    if (!(device & 0x01)) device++;   // indirizzo dispari
+
 #endif
                     fauxmo.setState(alexa_id, stato | 0xC1, value); // 0xc1: dara' errore ma almeno evita il blocco
                   }
@@ -3237,7 +3345,10 @@ void setup() {
 #endif
 #ifdef KNX
                     command = 0x80;
-                    device++;
+                    
+// indirizzo deve essere pari
+                    if (device & 0x01) device++;   // indirizzo pari
+
 #endif
                     fauxmo.setState(alexa_id, stato | 0xC0, value); // 0xc0: dopo aver inviato lo stato setta value a 128
                   }
@@ -3248,7 +3359,10 @@ void setup() {
 #endif
 #ifdef KNX
                     command = 0x81;
-                    device++;
+                    
+// indirizzo deve essere pari
+                    if (device & 0x01) device++;   // indirizzo pari
+
 #endif
                     fauxmo.setState(alexa_id, stato | 0xC0, value); // 0xc0: dopo aver inviato lo stato setta value a 128
                   }
@@ -3584,7 +3698,7 @@ void loop() {
       linesector = device_BUS_id[deviceX].linesector;
 #endif
       device = device_BUS_id[deviceX].address;
-      devtype = device_BUS_id[deviceX].type;
+      devtype = device_BUS_id[deviceX].deviceType;
       
       String sreq = tcpJarg(tcpBuffer,"\"request\""); // on-off-up-down-stop-nn%
       String scmd = tcpJarg(tcpBuffer,"\"command\""); // 0xnn
@@ -3640,7 +3754,7 @@ void loop() {
         
           String stype = tcpJarg(tcpBuffer,"\"type\"");
           devtype = (char) stype.toInt();
-          device_BUS_id[deviceX].type = devtype;
+          device_BUS_id[deviceX].deviceType = devtype;
              
           if (devtype == 9)
           {
@@ -3712,7 +3826,7 @@ void loop() {
       deviceX = 1;
       while (device_BUS_id[deviceX].addressW)
       {
-        devtype = device_BUS_id[deviceX].type;
+        devtype = device_BUS_id[deviceX].deviceType;
         if (device_BUS_id[deviceX].addressW)
         {
 #ifdef KNX
@@ -3783,7 +3897,7 @@ void loop() {
         deviceX = (char) busid.toInt();
       }
 
-      devtype = device_BUS_id[deviceX].type;
+      devtype = device_BUS_id[deviceX].deviceType;
       if (device_BUS_id[deviceX].addressW)
       {
 #ifdef KNX
@@ -4350,7 +4464,7 @@ void loop() {
 #endif
       MQTTnewdevice(dvx, 0);
       devCtr++;
-      device_BUS_id[dvx].type = devtype;
+      device_BUS_id[dvx].deviceType = devtype;
       String dsc = descrOfIx(dvx);
 
       if ((dsc[0] == 0) || (dsc[0] == 0xFF) || (dsc == ""))
@@ -4490,6 +4604,11 @@ void loop() {
     String topic = "NOTOPIC";
     String payload = "";
 
+
+
+
+
+
     // ================================ C O M A N D I     S C S ===========================================
 #ifdef SCS
 
@@ -4514,7 +4633,7 @@ void loop() {
         devx = 1;
         while ((devx < DEV_NR) && (device_BUS_id[devx].addressW))
         {
-          devtype = device_BUS_id[devx].type;
+          devtype = device_BUS_id[devx].deviceType;
           if ((devtype == 1) || (devtype == 3))  // dimmer
           {
             sprintf(nomeDevice, "%02X", device_BUS_id[devx].address);  // to
@@ -4536,152 +4655,56 @@ void loop() {
         else
           device = replyBuffer[3];  // from
       }
-    } // <-replyBuffer[4] == 0x12---------------------comando----------------------------
 
-    if ((action == 0) || (action == 1))       // switch
-      devtype = 1;
-    else if ((action == 3) || (action == 4))      // dimmer
-      devtype = 0; // sono solo richieste di +/- , poi arrivera' l'intensita'
-    else if ((action == 0x08) || (action == 0x09) || (action == 0x0A))   // cover
-      devtype = 8;
-    else if ((action & 0x0F) == 0x0D) // da 0x1D a 0x9D
-    {
-      devtype = 3;
-      action >>= 4;
-      action *= 10;	// percentuale 10-90
 
-      // --------------- percentuale da 1 a 255 (home assistant) ----------------
-      //         if (domoticMode == 'h')   // h=as homeassistant
+
+
+
+      if ((action == 0) || (action == 1))       // switch
+        devtype = 1;
+      else if ((action == 3) || (action == 4))      // dimmer
+        devtype = 0; // sono solo richieste di +/- , poi arrivera' l'intensita'
+      else if ((action == 0x08) || (action == 0x09) || (action == 0x0A))   // cover
+        devtype = 8;
+      else if ((action & 0x0F) == 0x0D) // da 0x1D a 0x9D
       {
-        int pct = action;
-        pct *= 255;      // da 0 a 25500
-        pct /= 100;      // da 0 a 100
-        action = (char) pct;
+        devtype = 3;
+        action >>= 4;
+        action *= 10;	// percentuale 10-90
+
+        // --------------- percentuale da 1 a 255 (home assistant) ----------------
+        //         if (domoticMode == 'h')   // h=as homeassistant
+        {
+          int pct = action;
+          pct *= 255;      // da 0 a 25500
+          pct /= 100;      // da 0 a 100
+          action = (char) pct;
+        }
       }
-    }
-    else
-      devtype = 0;
+      else
+        devtype = 0;
 
 
 
 
 
-    if ((device != 0) && (devtype != 0))
+      if ((device != 0) && (devtype != 0))
       //      if ((device != 0) && (devtype != 0) && ((device != prevDevice) || (action != prevAction)))
-    { // device valido & evitare doppioni
-      prevDevice = device;
-      prevAction = action;
+      { // device valido & evitare doppioni
+        prevDevice = device;
+        prevAction = action;
 
-      char nomeDevice[5];
-      sprintf(nomeDevice, "%02X", device);  // to
+        char nomeDevice[5];
+        sprintf(nomeDevice, "%02X", device);  // to
 
       // ----------------------------------------- STATO SWITCH --------------------------------------------
-      if (devtype == 1)
-      {
-        if (action == 0)
-        {
-          payload = "ON";
-        }
-        else if (action == 1)
-        {
-          payload = "OFF";
-        }
-        topic = SWITCH_STATE;
-        topic += nomeDevice;
-      }
-      else
-        // ----------------------------------------- STATO DIMMER --------------------------------------------
-      if ((devtype == 3) ||(devtype == 4))
-      {
-        char actionc[4];
-        sprintf(actionc, "%02u", action);
-        payload = String(actionc);
-        topic = BRIGHT_STATE;
-        topic += nomeDevice;
-      }
-      else
-        // ----------------------------------------- STATO COVER --------------------------------------------
-      if (devtype == 8)
-      {
-        if (action == 0x08)
-        {
-          if ((domoticMode == 'h') || (domoticMode == 'H'))
-            payload = "open";
-          else
-            payload = "OFF";
-        }
-        else if (action == 0x09)
-        {
-          if ((domoticMode == 'h') || (domoticMode == 'H'))
-            payload = "closed";
-          else
-            payload = "ON";
-        }
-        else if (action == 0x0A)
-        {
-          payload = "STOP";
-        }
-
-        topic = COVER_STATE;
-        topic += nomeDevice;
-      } // devtype=8
-  // ----------------------------------------------------------------------------------------------------
-  // ================================ F I N E   C O M A N D I     S C S ===========================================
-#endif  // def SCS           
-
-
-
-
-
-
-
-
-
-
-  // ================================ C O M A N D I     K N X  ===========================================
-#ifdef KNX
-  // KNX intero  [9] B4 10 29 0B 65 E1 00 81 7C
-  // knx ridotto  [0xF5] [y] 29 0B 65 81
-
-  //    word device = word(replyBuffer[2], replyBuffer[3]);
-      DEVADDR deva;
-      deva.linesector = replyBuffer[3];  // sector & line da telegramma
-      deva.address = replyBuffer[4];      // id device da telegramma
-      char dispari = 0;
-      action = replyBuffer[5];
-      if (deva.address & 0x01)
-      {
-        dispari = 1;           // dispari: id domoticz = id telegramma
-      }
-      else
-      {
-        deva.address--;              // pari:    id domoticz = id telegramma - 1
-      }
-            
-      char devx = ixOfDevice(deva);
-      devtype = device_BUS_id[devx].type;
-      if ((devtype < 0x01) || (devtype > 8))
-        devtype = 0x01;
-      
-      if (devtype == 0x01)    // luce non va considerato pari/dispari...
-      {
-        deva.address = replyBuffer[4];      // ripristina indirizzo originale
-      }
-
-      if ((domoticMode == 'H') || (domoticMode == 'D') || ((devx) && (devtype))) // - H: DEFAULT SWITCH
-      { // device valido & evitare doppioni
-        prevDevice = devx;
-        prevAction = action;
-        char nomeDevice[6];
-        sprintf(nomeDevice, "%02X%02X", deva.linesector, deva.address);  // to
-        // ----------------------------------------- STATO SWITCH --------------------------------------------
         if (devtype == 1)
         {
-          if (action == 0x81)
+          if (action == 0)
           {
-             payload = "ON";
+            payload = "ON";
           }
-          else if (action == 0x80)
+          else if (action == 1)
           {
             payload = "OFF";
           }
@@ -4690,7 +4713,7 @@ void loop() {
         }
         else
         // ----------------------------------------- STATO DIMMER --------------------------------------------
-        if (devtype == 4)
+        if ((devtype == 3) ||(devtype == 4))
         {
           char actionc[4];
           sprintf(actionc, "%02u", action);
@@ -4701,39 +4724,203 @@ void loop() {
         else
         // ----------------------------------------- STATO COVER --------------------------------------------
         if (devtype == 8)
-          if (dispari)    // stop
+        {
+          if (action == 0x08)
           {
-            if ((action == 0x80) || (action == 0x81))
-            {
-              payload = "STOP";
-            }
-            topic = COVER_STATE;
-            topic += nomeDevice;
+            if ((domoticMode == 'h') || (domoticMode == 'H'))
+              payload = "open";
+            else
+              payload = "OFF";
           }
-          else   //    (pari)    // up down
+          else if (action == 0x09)
           {
-            if (action == 0x80)
-            {
-              if ((domoticMode == 'h') || (domoticMode == 'H'))
-                payload = "open";
-              else
-                payload = "OFF";
-            }
-            else if (action == 0x81)
-            {
-              if ((domoticMode == 'h') || (domoticMode == 'H'))
-                payload = "closed";
-              else
-                payload = "ON";
-            }
-
-            topic = COVER_STATE;
-            topic += nomeDevice;
+            if ((domoticMode == 'h') || (domoticMode == 'H'))
+              payload = "closed";
+            else
+              payload = "ON";
+          }
+          else if (action == 0x0A)
+          {
+            payload = "STOP";
           }
 
+          topic = COVER_STATE;
+          topic += nomeDevice;
+        } // devtype=8
+  // ----------------------------------------------------------------------------------------------------
+
+
+    // ======================================== P U B B L I C A Z I O N E ===========================================
+          const char* cTopic = topic.c_str();
+          if (payload == "")
+          {
+              char cPayload[24];
+              sprintf(cPayload, "UNKNOWN: %02X %02X %02X %02X", replyBuffer[1], replyBuffer[2], replyBuffer[3], replyBuffer[4]);  // to
+              client.publish(cTopic, cPayload, 0);
+          }
+          else
+          {
+              const char* cPayload = payload.c_str();
+              client.publish(cTopic, cPayload, mqtt_persistence);
+          }
+        }       // evitare doppioni & device valido
+      } // <-replyBuffer[4] == 0x12---------------------comando----------------------------
+  // ----------------------------------------------------------------------------------------------------
+      else
+      
+      
+      
+  // ----------------------------------pubblicazione stati GENERIC device (to & from)---------------------------
+      { // generic device
+
+          device = replyBuffer[2];            // TO
+          devx = ixOfDevice(device);
+          
+          if ((devx) && (device_BUS_id[devx].deviceType == 11))  
+          {	          // device generic censito
+            char nomeDevice[3];
+            sprintf(nomeDevice, "%02X", device);  // to
+            topic = GENERIC_TO;
+            topic += nomeDevice;
+            const char* cTopic = topic.c_str();
+            char cPayload[24];
+            sprintf(cPayload, "%02X%02X%02X", replyBuffer[3], replyBuffer[4], replyBuffer[5]);
+            client.publish(cTopic, cPayload, mqtt_persistence);
+          }
+
+          device = replyBuffer[3];            // FROM
+          devx = ixOfDevice(device);
+          if ((devx) && (device_BUS_id[devx].deviceType == 11))  
+          {	          // device generic censito
+            char nomeDevice[3];
+            sprintf(nomeDevice, "%02X", device);  // from
+            topic = GENERIC_FROM;
+            topic += nomeDevice;
+            const char* cTopic = topic.c_str();
+            char cPayload[24];
+            sprintf(cPayload, "%02X%02X%02X", replyBuffer[2], replyBuffer[4], replyBuffer[5]);
+            client.publish(cTopic, cPayload, mqtt_persistence);
+          }
+
+      } // generic device
+  // ----------------------------------------------------------------------------------------------------
+    } // END pubblicazione stato devices
+
+  // ================================ F I N E   C O M A N D I     S C S ===========================================
+#endif  // def SCS           
+
+  // ===============================================================================================================
+
+
+
+
+
+
+
+
+
+
+
+
+
+  // ===============================================================================================================
+
+
+  // ================================ C O M A N D I     K N X  ===========================================
+#ifdef KNX
+  // KNX intero  [9] B4 10 29 0B 65 E1 00 81 7C
+  // knx ridotto  [0xF5] [y] 29 0B 65 81
+
+  //    word device = word(replyBuffer[2], replyBuffer[3]);
+        DEVADDR deva;
+        deva.linesector = replyBuffer[3];  // sector & line da telegramma
+        deva.address = replyBuffer[4];      // id device da telegramma
+        char dispari = 0;
+        action = replyBuffer[5];
+        if (deva.address & 0x01)
+        {
+          dispari = 1;           // dispari: id domoticz = id telegramma
+        }
+        else
+        {
+          deva.address--;              // pari:    id domoticz = id telegramma - 1
+        }
+            
+        char devx = ixOfDevice(deva);
+        devtype = device_BUS_id[devx].deviceType;
+        if ((devtype < 0x01) || (devtype > 8))
+          devtype = 0x01;
+      
+        if (devtype == 0x01)    // luce non va considerato pari/dispari...
+        {
+          deva.address = replyBuffer[4];      // ripristina indirizzo originale
+        }
+
+        if ((domoticMode == 'H') || (domoticMode == 'D') || ((devx) && (devtype))) // - H: DEFAULT SWITCH
+        { // default switch
+          prevDevice = devx;
+          prevAction = action;
+          char nomeDevice[6];
+          sprintf(nomeDevice, "%02X%02X", deva.linesector, deva.address);  // to
+        // ----------------------------------------- STATO SWITCH --------------------------------------------
+          if (devtype == 1)
+          {
+            if (action == 0x81)
+            {
+               payload = "ON";
+            }
+            else if (action == 0x80)
+            {
+              payload = "OFF";
+            }
+            topic = SWITCH_STATE;
+            topic += nomeDevice;
+          }
+          else
+        // ----------------------------------------- STATO DIMMER --------------------------------------------
+          if (devtype == 4)
+          {
+            char actionc[4];
+            sprintf(actionc, "%02u", action);
+            payload = String(actionc);
+            topic = BRIGHT_STATE;
+            topic += nomeDevice;
+          }
+          else
+        // ----------------------------------------- STATO COVER --------------------------------------------
+          if (devtype == 8)
+          {
+            if (dispari)    // stop
+            {
+              if ((action == 0x80) || (action == 0x81))
+              {
+                payload = "STOP";
+              }
+              topic = COVER_STATE;
+              topic += nomeDevice;
+            }
+            else   //    (pari)    // up down
+            {
+              if (action == 0x80)
+              {
+                if ((domoticMode == 'h') || (domoticMode == 'H'))
+                  payload = "open";
+                else
+                  payload = "OFF";
+              }
+              else if (action == 0x81)
+              {
+                if ((domoticMode == 'h') || (domoticMode == 'H'))
+                  payload = "closed";
+                else
+                  payload = "ON";
+              }
+
+              topic = COVER_STATE;
+              topic += nomeDevice;
+            }
+          }  // devtype = 8
     // ----------------------------------------------------------------------------------------------------
-    // ================================ F I N E   C O M A N D I     K N X ===========================================
-#endif  // def KNX           
 
 
 
@@ -4746,19 +4933,27 @@ void loop() {
           const char* cTopic = topic.c_str();
           if (payload == "")
           {
-            char cPayload[24];
-            sprintf(cPayload, "UNKNOWN: %02X %02X %02X %02X", replyBuffer[1], replyBuffer[2], replyBuffer[3], replyBuffer[4]);  // to
-            client.publish(cTopic, cPayload, 0);
+              char cPayload[24];
+              sprintf(cPayload, "UNKNOWN: %02X %02X %02X %02X", replyBuffer[1], replyBuffer[2], replyBuffer[3], replyBuffer[4]);  // to
+              client.publish(cTopic, cPayload, 0);
           }
           else
           {
-            const char* cPayload = payload.c_str();
-            client.publish(cTopic, cPayload, mqtt_persistence);
+              const char* cPayload = payload.c_str();
+              client.publish(cTopic, cPayload, mqtt_persistence);
           }
-        }      // evitare doppioni & device valido
-      } // END pubblicazione stato devices
+        }       // default switch
+
+  } // END pubblicazione stato devices
+    // ================================ F I N E   C O M A N D I     K N X ===========================================
+#endif  // def KNX           
 
       // ===============================================================================================================
+
+
+
+
+
 
 
 
@@ -4926,7 +5121,7 @@ char ixOfDeviceNew(char * knxdevice)
     { 
         device_BUS_id[x].linesector = linsect;
         device_BUS_id[x].address = device;
-        device_BUS_id[x].type = 1;
+        device_BUS_id[x].deviceType = 1;
         device_BUS_id[x].alexa_id = 0;
         return x;
     }
@@ -4949,7 +5144,7 @@ char ixOfDeviceNew(char linsect, char device)
     { 
         device_BUS_id[x].linesector = linsect;
         device_BUS_id[x].address = device;
-        device_BUS_id[x].type = 1;
+        device_BUS_id[x].deviceType = 1;
         device_BUS_id[x].alexa_id = 0;
         return x;
     }
@@ -5078,7 +5273,7 @@ char ixOfDeviceNew(char device)
         device_BUS_id[x].linesector = 0;
 #endif
         device_BUS_id[x].address = device;
-        device_BUS_id[x].type = 1;
+        device_BUS_id[x].deviceType = 1;
         device_BUS_id[x].alexa_id = 0;
         return x;
     }
@@ -5108,7 +5303,7 @@ char ixOfDeviceNew(char * scsdevice)
         device_BUS_id[x].linesector = 0;
 #endif
         device_BUS_id[x].address = device;
-        device_BUS_id[x].type = 1;
+        device_BUS_id[x].deviceType = 1;
         device_BUS_id[x].alexa_id = 0;
         return x;
     }
