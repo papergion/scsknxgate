@@ -1,12 +1,13 @@
 //----------------------------------------------------------------------------------
 #define _FW_NAME     "SCSKNXGATE"
-#define _FW_VERSION  "VER_5.0590 "
+#define _FW_VERSION  "VER_5.0591 "
 #define _ESP_CORE    "esp8266-2.5.2"
 //----------------------------------------------------------------------------------
 //
 //        ---- attenzione - porta http: 8080 <--se alexaParam=y--------------
 //
 //----------------------------------------------------------------------------------
+// 5.0591 serial buffers aumentati da 16 a 32 bytes
 // 5.0590 device type 11: generic device SCS (knx solo parzialmente)
 // 5.0589 gestione tapparelle su indirizzo principale pari 
 // 5.0588 knx - trattamento indirizzi 00
@@ -310,7 +311,7 @@ char udpBuffer[255];
 char requestBuffer[36];
 unsigned char requestLen = 0;
 
-char serObuffer[BUFNR][16];
+char serObuffer[BUFNR][32];
 char serOlen[BUFNR] = {0,0};
 signed char bufSemaphor = -1;
 
