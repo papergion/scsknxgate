@@ -1,12 +1,14 @@
 //----------------------------------------------------------------------------------
 #define _FW_NAME     "SCSKNXGATE"
-#define _FW_VERSION  "VER_5.0591 "
+#define _FW_VERSION  "VER_5.0593 "
 #define _ESP_CORE    "esp8266-2.5.2"
 //----------------------------------------------------------------------------------
 //
 //        ---- attenzione - porta http: 8080 <--se alexaParam=y--------------
 //
 //----------------------------------------------------------------------------------
+// 5.0593 scrittura seriale tramite standard buffer 
+// 5.0592 device type 11: generic device KNX (solo ricezione)
 // 5.0591 serial buffers aumentati da 16 a 32 bytes
 // 5.0590 device type 11: generic device SCS (knx solo parzialmente)
 // 5.0589 gestione tapparelle su indirizzo principale pari 
@@ -19,11 +21,12 @@
 //----------------------------------------------------------------------------------
 //
 
-//#define KNX
-#define SCS
+#define KNX
+//#define SCS
 //#define DEBUG
 //#define MQTTLOG
 #define BLINKLED     // funziona solo su ESP01S //
+#define UART_W_BUFFER
 
 #define NO_ALEXA_MQTT
 #define USE_TCPSERVER
@@ -1542,7 +1545,7 @@ char reconnect()
 }
 
 // ===============================================================================================
-// MQTT callback function  - comando proveniente da desktop o da pulsante fisico
+// MQTT callback function  - comando proveniente da MQTT:  desktop o pulsante fisico
 // ===============================================================================================
 void MqttCallback(char* topic, byte* payload, unsigned int length)
 // =============================================================================================================
@@ -1766,7 +1769,7 @@ void MqttCallback(char* topic, byte* payload, unsigned int length)
     dev[1] = *(topic + sizeof(GENERIC_SET));
     
     requestBuffer[requestLen++] = '§';
-    requestBuffer[requestLen++] = 'y';		// 0x79
+    requestBuffer[requestLen++] = 'y';		// 0x79 (@y: invia a pic da MQTT cmd standard da inviare sul bus)
 
 #ifdef SCS
 	char from;
@@ -1951,7 +1954,7 @@ void MqttCallback(char* topic, byte* payload, unsigned int length)
     if (devtype != 11)	// <====================not GENERIC=======================
     {
       requestBuffer[requestLen++] = '§';
-      requestBuffer[requestLen++] = 'y';
+      requestBuffer[requestLen++] = 'y';    // 0x79 (@y: invia a pic da MQTT cmd standard da inviare sul bus)
 
 #ifdef SCS
       requestBuffer[requestLen++] = device; // to   device
@@ -2501,6 +2504,16 @@ void immediateSend(void)
     int s = 0;
     while (s < requestLen)
     {
+#ifdef UART_W_BUFFER
+          Serial.write(requestBuffer[s]);    //  scrittura SERIALE 
+  #ifdef USE_TCPSERVER
+          if (tcpuart == 2) 
+          {
+            sprintf(logCh, "%02X ", requestBuffer[s]);
+            log += logCh;
+          }
+  #endif
+#else
       delayMicroseconds(OUTERWAIT);
 #ifndef DEBUG
       while (((USS(0) >> USTXC) & 0xff) > 0)     { // aspetta il buffer sia completamente vuoto
@@ -2537,6 +2550,7 @@ void immediateSend(void)
 #endif
 #endif
       delayMicroseconds(OUTERWAIT);
+#endif // UART_W_BUFFER
       s++;
     }
 #ifdef DEBUG
@@ -3228,7 +3242,7 @@ void setup() {
                     break;
                     
                   serObuffer[bufNr][serOlen[bufNr]++] = '§';
-                  serObuffer[bufNr][serOlen[bufNr]++] = 'y';
+                  serObuffer[bufNr][serOlen[bufNr]++] = 'y';  // 0x79 (@y: invia a pic da ALEXA cmd standard da inviare sul bus)
 
 #ifdef KNX
 // comando §y<source><linesector><destaddress><command>
@@ -3281,7 +3295,7 @@ void setup() {
                     break;
 
                   serObuffer[bufNr][serOlen[bufNr]++] = '§';
-                  serObuffer[bufNr][serOlen[bufNr]++] = 'y';
+                  serObuffer[bufNr][serOlen[bufNr]++] = 'y';        // 0x79 (@y: invia a pic da ALEXA cmd standard da inviare sul bus)
                   serObuffer[bufNr][serOlen[bufNr]++] = device;     // to   device address
                   serObuffer[bufNr][serOlen[bufNr]++] = 0x00;       // from device
                   serObuffer[bufNr][serOlen[bufNr]++] = 0x12;       // command type
@@ -3303,7 +3317,7 @@ void setup() {
                   {
                     command = (alexacommand & 1) | 0x80;
                     serObuffer[bufNr][serOlen[bufNr]++] = '§';
-                    serObuffer[bufNr][serOlen[bufNr]++] = 'y';
+                    serObuffer[bufNr][serOlen[bufNr]++] = 'y';        // 0x79 (@y: invia a pic da ALEXA cmd standard da inviare sul bus)
                     
                   // comando §y<source><linesector><destaddress><command>
                     serObuffer[bufNr][serOlen[bufNr]++] = 0x01;       // from device
@@ -3371,7 +3385,7 @@ void setup() {
                     break;
 
                   serObuffer[bufNr][serOlen[bufNr]++] = '§';
-                  serObuffer[bufNr][serOlen[bufNr]++] = 'y';
+                  serObuffer[bufNr][serOlen[bufNr]++] = 'y';        // 0x79 (@y: invia a pic da ALEXA cmd standard da inviare sul bus)
 
 #ifdef KNX
 // comando §y<source><linesector><destaddress><command>
@@ -3708,7 +3722,7 @@ void loop() {
       {
         char command = aConvert(scmd);
         requestBuffer[requestLen++] = '§';
-        requestBuffer[requestLen++] = 'y';
+        requestBuffer[requestLen++] = 'y';   // 0x79 (@y: invia a pic da tcp #request cmd standard da inviare sul bus)
 
 #ifdef KNX
 // comando §y<source><linesector><destaddress><command>
@@ -4299,6 +4313,7 @@ void loop() {
       }
       delayMicroseconds(OUTERWAIT);
     }
+    replyBuffer[replyLen] = 0;        // aggiunge 0x00
 
 
 #ifdef MQTTLOG
@@ -4521,6 +4536,8 @@ void loop() {
     char devx = ixOfDevice(device);
 #endif
     
+    
+    
     if (replyBuffer[1] == 'u')    //'u': posizione tapparelle//
     {
       if (alexaParam == 'y')      //u//
@@ -4541,6 +4558,8 @@ void loop() {
 #endif    
 
     // ----------------------------------------- ALEXA STATO DEVICES END----------------------------------------------------
+
+
 
     // ----------------uab-(address position)--- PUBBLICAZIONE STATO COVERPCT -------------------------------------------------------
       if (mqttopen == 3)    //u//
@@ -4598,14 +4617,15 @@ void loop() {
   // --------SCS-----4abcd-(from-to-type-cmd)------- PUBBLICAZIONE STATO DEVICES -------------------------------------------------------
   // --------KNX-----4abcd-(from-to-cmd)------------ PUBBLICAZIONE STATO DEVICES -------------------------------------------------------
 
-  if ((mqttopen == 3) && (replyLen == 6) && (replyBuffer[0] == 0xF5) && (replyBuffer[1] == 'y'))
+  if ((mqttopen == 3) && (replyBuffer[1] == 'y') && 
+      ((replyBuffer[0] == 0xF5) || (replyBuffer[0] == 0xF6)))   
+//  if ((mqttopen == 3) && (replyLen == 6) && (replyBuffer[0] == 0xF5) && (replyBuffer[1] == 'y'))
+
   { // START pubblicazione stato device        [0xF5] [y] 32 00 12 01
     char devtype;
     char action;
     String topic = "NOTOPIC";
     String payload = "";
-
-
 
 
 
@@ -4764,14 +4784,14 @@ void loop() {
               const char* cPayload = payload.c_str();
               client.publish(cTopic, cPayload, mqtt_persistence);
           }
-        }       // evitare doppioni & device valido
-      } // <-replyBuffer[4] == 0x12---------------------comando----------------------------
+      }       // evitare doppioni & device valido
+    } // <-replyBuffer[4] == 0x12---------------------comando----------------------------
   // ----------------------------------------------------------------------------------------------------
       else
       
       
       
-  // ----------------------------------pubblicazione stati GENERIC device (to & from)---------------------------
+  // ----------------------------------pubblicazione stati GENERIC device SCS (to & from)------------------------
       { // generic device
 
           device = replyBuffer[2];            // TO
@@ -4784,7 +4804,7 @@ void loop() {
             topic = GENERIC_TO;
             topic += nomeDevice;
             const char* cTopic = topic.c_str();
-            char cPayload[24];
+            char cPayload[8];
             sprintf(cPayload, "%02X%02X%02X", replyBuffer[3], replyBuffer[4], replyBuffer[5]);
             client.publish(cTopic, cPayload, mqtt_persistence);
           }
@@ -4831,6 +4851,7 @@ void loop() {
 #ifdef KNX
   // KNX intero  [9] B4 10 29 0B 65 E1 00 81 7C
   // knx ridotto  [0xF5] [y] 29 0B 65 81
+  // knx ridotto  [0xF6] [y] 01 0F 01 81 01
 
   //    word device = word(replyBuffer[2], replyBuffer[3]);
         DEVADDR deva;
@@ -4849,10 +4870,10 @@ void loop() {
             
         char devx = ixOfDevice(deva);
         devtype = device_BUS_id[devx].deviceType;
-        if ((devtype < 0x01) || (devtype > 8))
+        if ((devtype < 0x01) || (devtype > 0x0F))
           devtype = 0x01;
       
-        if (devtype == 0x01)    // luce non va considerato pari/dispari...
+        if ((devtype == 0x01) || (devtype == 11))     // luce non va considerato pari/dispari...
         {
           deva.address = replyBuffer[4];      // ripristina indirizzo originale
         }
@@ -4926,20 +4947,38 @@ void loop() {
 
 
 
+    // ----------------------------------------- STATO GENERIC DEVICES KNX --------------------------------------------
+          if (devtype == 11)
+          {
+  // knx ridotto  [0xF5] [y] 29 0B 65 81
+  // knx ridotto  [0xF6] [y] 01 0F 01 81 01
+            topic = GENERIC_TO;
+            topic += nomeDevice;
+            const char* cTopic = topic.c_str();
+            char cPayload[8];
+            if (replyBuffer[0] == 0xF6)
+                sprintf(cPayload, "%02X%02X%02X", replyBuffer[2], replyBuffer[5], replyBuffer[6]);
+            else
+                sprintf(cPayload, "%02X%02X", replyBuffer[2], replyBuffer[5]);
+            client.publish(cTopic, cPayload, mqtt_persistence);
+          }  // devtype = 11
+    // ----------------------------------------------------------------------------------------------------
 
 
+          else
 
 
     // ======================================== P U B B L I C A Z I O N E ===========================================
-          const char* cTopic = topic.c_str();
           if (payload == "")
           {
+              const char* cTopic = topic.c_str();
               char cPayload[24];
               sprintf(cPayload, "UNKNOWN: %02X %02X %02X %02X", replyBuffer[1], replyBuffer[2], replyBuffer[3], replyBuffer[4]);  // to
               client.publish(cTopic, cPayload, 0);
           }
           else
           {
+              const char* cTopic = topic.c_str();
               const char* cPayload = payload.c_str();
               client.publish(cTopic, cPayload, mqtt_persistence);
           }
@@ -4995,6 +5034,16 @@ void loop() {
         int s = 0;
         while (s < requestLen)
         {
+#ifdef UART_W_BUFFER
+          Serial.write(requestBuffer[s]);    //  scrittura SERIALE 
+  #ifdef USE_TCPSERVER
+          if (tcpuart == 2) 
+          {
+            sprintf(logCh, "%02X ", requestBuffer[s]);
+            log += logCh;
+          }
+  #endif
+#else
           //       Serial.flush();
           //       Serial.write(requestBuffer[s]);   // write on serial KNXgate/SCSgate - 90uS
 
@@ -5045,6 +5094,7 @@ void loop() {
 #endif
 #endif
           delayMicroseconds(OUTERWAIT); // 100uS
+#endif // UART_W_BUFFER
           s++;
         }
 #ifdef DEBUG
@@ -5422,6 +5472,17 @@ char SendToPIC(char bufNr)
      int s = 0;
      while (s < len)
      {
+#ifdef UART_W_BUFFER
+          Serial.write(serObuffer[bufNr][s]);    //  scrittura SERIALE 
+  #ifdef USE_TCPSERVER
+          if (tcpuart == 2) 
+          {
+            sprintf(logCh, "%02X ", serObuffer[bufNr][s]);
+            log += logCh;
+          }
+  #endif
+#else
+    
        // USS = uart register 1C-19 (32 bit)  bit 16-23=data nr in tx fifo   (USTXC = 16)
        // UART STATUS Registers Bits
        // USTX    31 //TX PIN Level
@@ -5467,9 +5528,10 @@ char SendToPIC(char bufNr)
        }
   #endif
 #endif
-       s++;
-       if (s < len)
+       if (s <= len)
           delayMicroseconds(OUTERWAIT); // 100uS
+#endif // UART_W_BUFFER
+       s++;
      }
 #ifdef DEBUG
      Serial.println("\r\n" + log);
