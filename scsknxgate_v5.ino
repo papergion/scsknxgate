@@ -1,12 +1,13 @@
 //----------------------------------------------------------------------------------
 #define _FW_NAME     "SCSKNXGATE"
-#define _FW_VERSION  "VER_5.0593 "
+#define _FW_VERSION  "VER_5.0594 "
 #define _ESP_CORE    "esp8266-2.5.2"
 //----------------------------------------------------------------------------------
 //
 //        ---- attenzione - porta http: 8080 <--se alexaParam=y--------------
 //
 //----------------------------------------------------------------------------------
+// 5.0594 espone in /status i reset counter 
 // 5.0593 scrittura seriale tramite standard buffer 
 // 5.0592 device type 11: generic device KNX (solo ricezione)
 // 5.0591 serial buffers aumentati da 16 a 32 bytes
@@ -235,6 +236,7 @@ char mqtt_server[32];
 char mqtt_user[32];
 char mqtt_password[20];
 char mqtt_persistence = 0;
+char mqtt_connections = 0;
 char mqtt_port[6];
 char mqtt_retry = 0;
 char mqtt_log = 0;
@@ -2206,6 +2208,23 @@ void handleStatus()
   content += "</li>";
 
   content += "<li>";
+  content += "MQTT connection retries: ";
+  content += String(mqtt_connections,DEC);
+  content += "</li>";
+
+// @Qr
+  Serial.write('@');    // command mode 
+  Serial.write('Q');    // command: query 
+  Serial.write('r');    // query PIC fw version
+  delay(50);            // wait 50ms
+  char nrs = 0;
+  nrs = Serial.read();        // receive from serial USB
+  content += "<li>";
+  content += "ESP resets: ";
+  content += String(nrs,DEC);
+  content += "</li>";
+
+  content += "<li>";
   content += "</li>";
 
   content += "<li>";
@@ -4144,6 +4163,7 @@ void loop() {
         Serial.println("mqtt not connected");
 #endif
         mqttopen = reconnect();
+        mqtt_connections++;
 #ifdef DEBUG
         if (mqttopen == 2)
           Serial.println("ok ready");
