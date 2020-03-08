@@ -1,12 +1,14 @@
 //----------------------------------------------------------------------------------
 #define _FW_NAME     "SCSKNXGATE"
-#define _FW_VERSION  "VER_5.0594 "
+#define _FW_VERSION  "VER_5.0596 "
 #define _ESP_CORE    "esp8266-2.5.2"
 //----------------------------------------------------------------------------------
 //
 //        ---- attenzione - porta http: 8080 <--se alexaParam=y--------------
 //
 //----------------------------------------------------------------------------------
+// 5.0596 64K spiffs per futura versione
+// 5.0595 nuova versione network scan per evitare timeout e reset ( setupAP1 )
 // 5.0594 espone in /status i reset counter 
 // 5.0593 scrittura seriale tramite standard buffer 
 // 5.0592 device type 11: generic device KNX (solo ricezione)
@@ -523,6 +525,119 @@ void setupAP(void)
 #endif
 
 }
+
+// -----------------------------------------------------------------------------------------------------------------------------------------------
+void setupAP1(char dbg)
+{
+  if (dbg)
+  {
+     Serial.setDebugOutput(true);  // <------------ WIFI debug on serial
+     Serial.println("AP start");
+  }
+
+  WiFi.mode(WIFI_STA);
+  WiFi.disconnect();
+
+  if (dbg)
+     Serial.println("now scan");
+
+  WiFi.scanNetworks(true);
+  long startScanMillis = millis();
+  int n = -1;
+  int tryctr = 0;
+  #define MAXTRY 200
+  while ((n < 0) && (tryctr < MAXTRY)) // 20 sec timeout
+  {
+     if (dbg)
+        Serial.print(".");
+     n = WiFi.scanComplete();
+     delay(100);
+     tryctr++;
+  }
+
+  if (dbg)
+  {
+     if (tryctr < MAXTRY)
+         Serial.println("scan done");
+     else
+         Serial.println("scan timeout");
+     if (n == 0)
+       Serial.println("no networks found");
+     else
+     {
+       Serial.print(n);
+       Serial.println(" networks found");
+       for (int i = 0; i < n; ++i)
+       {
+         // Print SSID and RSSI for each network found
+         Serial.print(i + 1);
+         Serial.print(": ");
+         Serial.print(WiFi.SSID(i));
+         Serial.print(" (");
+         Serial.print(WiFi.RSSI(i));
+         Serial.print(")");
+         Serial.println((WiFi.encryptionType(i) == ENC_TYPE_NONE) ? " " : "*");
+         delay(10);
+       }
+     }
+     Serial.println("");
+  }
+
+  wifiSignals = "<ol>";
+  char hBuffer[64];
+  for (int i = 0; i < n; ++i)
+  {
+    sprintf(hBuffer, "<li>%*s  Ch:%d (%ddBm) %s </li>", 20, WiFi.SSID(i).c_str(), WiFi.channel(i), WiFi.RSSI(i), WiFi.encryptionType(i) == ENC_TYPE_NONE ? "open" : "");
+    wifiSignals += hBuffer;
+
+/*
+    // Print SSID and RSSI for each network found
+                sprintf(hBuffer, " (%d) ", m);
+                content += hBuffer;
+    wifiSignals += "<li>";
+    wifiSignals += WiFi.SSID(i);
+    wifiSignals += " (";
+    wifiSignals += WiFi.RSSI(i);
+    wifiSignals += ")";
+    wifiSignals += (WiFi.encryptionType(i) == ENC_TYPE_NONE) ? " " : "*";
+    wifiSignals += "</li>";
+*/
+
+  }
+  if (tryctr >= MAXTRY)
+  {
+    wifiSignals += "<li>... timeout</li>";
+  }
+  
+  wifiSignals += "</ol>";
+  WiFi.scanDelete();
+  delay(100);
+
+  WiFi.mode(WIFI_AP);
+  WiFi.softAP(ssid, passphrase, 8);
+
+  if (dbg)
+     Serial.println("softap");
+
+  launchWeb(1);
+
+  if (dbg)
+  {
+     WiFi.printDiag(Serial);             // wifi print diagnosys
+     Serial.println("open UDP port");
+  }
+
+  udpopen = udpConnection.begin(udpLocalPort);
+
+  if (dbg)
+  {
+     if (udpopen == 1)
+       Serial.println ( "UDP server started" );
+     else
+       Serial.println ( "UDP open ERROR" );
+  }
+}
+
 
 // =============================================================================================
 void handleNotFound() {
@@ -2842,8 +2957,8 @@ void setup() {
 //  Serial.setTimeout(5000);
   Serial.setTimeout(1000);
   Serial.readBytes(&serIniOption, 1);
-  if ((serIniOption > 64) && (serIniOption < 91)) serIniOption += 32;
-  if (serIniOption == 'a')
+//  if ((serIniOption > 64) && (serIniOption < 91)) serIniOption += 32;
+  if ((serIniOption == 'a') || (serIniOption == 'A'))
   {
     forceAP = 1;
     Serial.println("a: AP mode");
@@ -3518,7 +3633,10 @@ void setup() {
     // =================================================================================================
     // access point mode
     // =================================================================================================
-    setupAP();
+    if (serIniOption == 'A')
+      setupAP1(1);
+    else
+      setupAP1(0);
     Serial.write('@');   // set led lamps
     Serial.write(0xF2);  // set led lamps high-freq (AP mode)
   }
