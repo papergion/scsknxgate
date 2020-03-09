@@ -1,14 +1,15 @@
 //----------------------------------------------------------------------------------
 #define _FW_NAME     "SCSKNXGATE"
-#define _FW_VERSION  "VER_5.0596 "
+#define _FW_VERSION  "VER_5.0598 "
 #define _ESP_CORE    "esp8266-2.5.2"
 //----------------------------------------------------------------------------------
 //
 //        ---- attenzione - porta http: 8080 <--se alexaParam=y--------------
 //
 //----------------------------------------------------------------------------------
+// 5.0598 test 64K spiffs con files di update PIC
 // 5.0596 64K spiffs per futura versione
-// 5.0595 nuova versione network scan per evitare timeout e reset ( setupAP1 )
+// 5.0595 nuova versione network scan per evitare timeout e reset ( setupAP )
 // 5.0594 espone in /status i reset counter 
 // 5.0593 scrittura seriale tramite standard buffer 
 // 5.0592 device type 11: generic device KNX (solo ricezione)
@@ -105,7 +106,7 @@
 #include <ESP8266mDNS.h>
 #include "PubSubClient.h"
 #include <WiFiUdp.h>
-//#include <fs.h>
+#include <fs.h>
 #include <ArduinoOTA.h>
 
 #include <EEPROM.h>
@@ -457,77 +458,7 @@ void launchWeb(int webtype)
 }
 
 // -----------------------------------------------------------------------------------------------------------------------------------------------
-void setupAP(void)
-{
-#ifdef DEBUG
-  Serial.println("AP start");
-#endif
-  WiFi.mode(WIFI_STA);
-//  WiFi.disconnect();
-  delay(100);
-#ifdef DEBUG
-  Serial.println("now scan");
-#endif
-  int n = WiFi.scanNetworks();
-#ifdef DEBUG
-  Serial.println("scan done");
-  if (n == 0)
-    Serial.println("no networks found");
-  else
-  {
-    Serial.print(n);
-    Serial.println(" networks found");
-    for (int i = 0; i < n; ++i)
-    {
-      // Print SSID and RSSI for each network found
-      Serial.print(i + 1);
-      Serial.print(": ");
-      Serial.print(WiFi.SSID(i));
-      Serial.print(" (");
-      Serial.print(WiFi.RSSI(i));
-      Serial.print(")");
-      Serial.println((WiFi.encryptionType(i) == ENC_TYPE_NONE) ? " " : "*");
-      delay(10);
-    }
-  }
-  Serial.println("");
-#endif
-  wifiSignals = "<ol>";
-  for (int i = 0; i < n; ++i)
-  {
-    // Print SSID and RSSI for each network found
-    wifiSignals += "<li>";
-    wifiSignals += WiFi.SSID(i);
-    wifiSignals += " (";
-    wifiSignals += WiFi.RSSI(i);
-    wifiSignals += ")";
-    wifiSignals += (WiFi.encryptionType(i) == ENC_TYPE_NONE) ? " " : "*";
-    wifiSignals += "</li>";
-  }
-  wifiSignals += "</ol>";
-  delay(100);
-
-  WiFi.mode(WIFI_AP);
-  WiFi.softAP(ssid, passphrase, 8);
-#ifdef DEBUG
-  Serial.println("softap");
-#endif
-  launchWeb(1);
-#ifdef DEBUG
-  Serial.println("open UDP port");
-#endif
-  udpopen = udpConnection.begin(udpLocalPort);
-#ifdef DEBUG
-  if (udpopen == 1)
-    Serial.println ( "UDP server started" );
-  else
-    Serial.println ( "UDP open ERROR" );
-#endif
-
-}
-
-// -----------------------------------------------------------------------------------------------------------------------------------------------
-void setupAP1(char dbg)
+void setupAP(char dbg)
 {
   if (dbg)
   {
@@ -554,55 +485,21 @@ void setupAP1(char dbg)
      delay(100);
      tryctr++;
   }
-
-  if (dbg)
+  char chn[12];
+  int w;
+  int ch = 0;
+  for (w = 0; w < 12; w++)
   {
-     if (tryctr < MAXTRY)
-         Serial.println("scan done");
-     else
-         Serial.println("scan timeout");
-     if (n == 0)
-       Serial.println("no networks found");
-     else
-     {
-       Serial.print(n);
-       Serial.println(" networks found");
-       for (int i = 0; i < n; ++i)
-       {
-         // Print SSID and RSSI for each network found
-         Serial.print(i + 1);
-         Serial.print(": ");
-         Serial.print(WiFi.SSID(i));
-         Serial.print(" (");
-         Serial.print(WiFi.RSSI(i));
-         Serial.print(")");
-         Serial.println((WiFi.encryptionType(i) == ENC_TYPE_NONE) ? " " : "*");
-         delay(10);
-       }
-     }
-     Serial.println("");
-  }
-
+     chn[w] = 0;
+  }  
   wifiSignals = "<ol>";
   char hBuffer[64];
   for (int i = 0; i < n; ++i)
   {
     sprintf(hBuffer, "<li>%*s  Ch:%d (%ddBm) %s </li>", 20, WiFi.SSID(i).c_str(), WiFi.channel(i), WiFi.RSSI(i), WiFi.encryptionType(i) == ENC_TYPE_NONE ? "open" : "");
+	w = WiFi.channel(i);
+	chn[w] = 1;
     wifiSignals += hBuffer;
-
-/*
-    // Print SSID and RSSI for each network found
-                sprintf(hBuffer, " (%d) ", m);
-                content += hBuffer;
-    wifiSignals += "<li>";
-    wifiSignals += WiFi.SSID(i);
-    wifiSignals += " (";
-    wifiSignals += WiFi.RSSI(i);
-    wifiSignals += ")";
-    wifiSignals += (WiFi.encryptionType(i) == ENC_TYPE_NONE) ? " " : "*";
-    wifiSignals += "</li>";
-*/
-
   }
   if (tryctr >= MAXTRY)
   {
@@ -610,11 +507,26 @@ void setupAP1(char dbg)
   }
   
   wifiSignals += "</ol>";
+
+  if (dbg)
+  {
+     if (n == 0)
+       Serial.println("no networks found");
+     else
+       Serial.println(wifiSignals);
+
+     Serial.println("");
+  }
+
   WiFi.scanDelete();
   delay(100);
 
   WiFi.mode(WIFI_AP);
-  WiFi.softAP(ssid, passphrase, 8);
+  for (w = 1; w < 11; w++)
+  {
+     if (chn[w] == 0) ch = w;
+  }  
+  WiFi.softAP(ssid, passphrase, ch);
 
   if (dbg)
      Serial.println("softap");
@@ -628,7 +540,6 @@ void setupAP1(char dbg)
   }
 
   udpopen = udpConnection.begin(udpLocalPort);
-
   if (dbg)
   {
      if (udpopen == 1)
@@ -2182,9 +2093,9 @@ void handleStatus()
 
     content += "<li>";
     content += "Wifi connection ssid: ";
-    String esid;
-    esid = ReadStream(&esid[0], E_SSID, 32, 2);  // tipo=0 binary array   1:ascii array   2:ascii string
-    content += esid;
+    char hBuffer[64];
+    sprintf(hBuffer, "%s - Ch:%d - (%ddBm)", WiFi.SSID().c_str(), WiFi.channel(), WiFi.RSSI());
+    content += hBuffer;
     content += "</li>";
 
     content += "<li>";
@@ -2880,7 +2791,7 @@ void setup() {
   Serial.println("Press  A for start as AP,  E for eeprom init,  S for search speed");
   Serial.setTimeout(5000);
   Serial.readBytes(&serIniOption, 1);
-  if ((serIniOption > 64) && (serIniOption < 91)) serIniOption += 32;
+//  if ((serIniOption > 64) && (serIniOption < 91)) serIniOption += 32;
   Serial.setTimeout(1000);
 
   if (serIniOption == 'e')
@@ -2968,6 +2879,113 @@ void setup() {
     forceAP = 0;
     Serial.println("r: Display router mode");
   }
+  
+  if (serIniOption == 'f')
+  {
+    Serial.println("f: test spiffs");
+    if (SPIFFS.begin()) 
+    {
+      Serial.println("SPIFFS Active");
+      Serial.println();
+
+    } else 
+    {
+      Serial.println("Unable to activate SPIFFS");
+    }
+/*
+    File root = SPIFFS.open("/");
+    File file = root.openNextFile();
+    while(file){
+      Serial.print("FILE: ");
+      Serial.println(file.name());
+ 
+      file = root.openNextFile();
+    }    
+*/
+    String str = "";
+    Dir dir = SPIFFS.openDir("/");   
+    while (dir.next()) {
+      str += dir.fileName();
+      str += " / ";
+      str += dir.fileSize();
+      str += "\r\n";
+    }
+    Serial.print(str);
+
+    String path = "/version.txt";
+    Serial.println("handleFileRead: " + path);
+
+    if (SPIFFS.exists(path)) 
+    {
+      File f = SPIFFS.open(path, "r");
+      if (!f) {
+        Serial.print("Unable To Open '");
+        Serial.print(path);
+        Serial.println("' for Reading");
+        Serial.println();
+      } else {
+        String s;
+        Serial.print("Contents of file '");
+        Serial.print(path);
+        Serial.println("'");
+        Serial.println();
+        while (f.position()<f.size())
+        {
+          s=f.readStringUntil('\n');
+          s.trim();
+          Serial.println(s);
+        } 
+        f.close();
+      }
+      Serial.println();
+    }
+    else 
+      Serial.println("/version.txt not found");
+        
+        
+    
+    path = "/espknxgate.bin";
+    Serial.println("handleFileRead: " + path);
+
+    if (SPIFFS.exists(path)) 
+    {
+      File f = SPIFFS.open(path, "r");
+      if (!f) {
+        Serial.print("Unable To Open '");
+        Serial.print(path);
+        Serial.println("' for Reading");
+        Serial.println();
+      } else {
+        String s;
+        Serial.print("Contents of file '");
+        Serial.print(path);
+        Serial.println("'");
+        Serial.println();
+        
+        char buffer[20];
+        s=f.readBytes(buffer, 16);
+        
+  //              char hBuffer[32];
+  //              sprintf(hBuffer, " %02X%02X %02X%02X %02X %02X%02X %02X", replyBuffer[1], replyBuffer[2], replyBuffer[3], replyBuffer[4], replyBuffer[5], replyBuffer[6], replyBuffer[7], replyBuffer[8]);
+        Serial.printf("%02X %02X %02X %02X  %02X %02X %02X %02X", buffer[0], buffer[1], buffer[2], buffer[3], buffer[4], buffer[5], buffer[6], buffer[7]);
+        
+        f.close();
+      }
+      Serial.println();
+    }
+    else 
+      Serial.println("/espknxgate.bin not found");
+        
+        
+        
+        
+        
+        
+        
+    SPIFFS.end();
+  }
+  
+    
 #endif
 
 
@@ -3634,9 +3652,9 @@ void setup() {
     // access point mode
     // =================================================================================================
     if (serIniOption == 'A')
-      setupAP1(1);
+      setupAP(1);
     else
-      setupAP1(0);
+      setupAP(0);
     Serial.write('@');   // set led lamps
     Serial.write(0xF2);  // set led lamps high-freq (AP mode)
   }
