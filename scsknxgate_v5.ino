@@ -1,12 +1,11 @@
 //----------------------------------------------------------------------------------
 #define _FW_NAME     "SCSKNXGATE"
-#define _FW_VERSION  "VER_5.0598 "
+#define _FW_VERSION  "VER_5.0603 "
 #define _ESP_CORE    "esp8266-2.5.2"
 //----------------------------------------------------------------------------------
-//
 //        ---- attenzione - porta http: 8080 <--se alexaParam=y--------------
-//
 //----------------------------------------------------------------------------------
+// 5.0603 update PIC fw from spiffs 
 // 5.0598 test 64K spiffs con files di update PIC
 // 5.0596 64K spiffs per futura versione
 // 5.0595 nuova versione network scan per evitare timeout e reset ( setupAP )
@@ -82,11 +81,12 @@
     server.on ( "/", handleScan );                  // elenco reti wifi <- solo in modalita AP
     server.on ( "/", handleRoot );                  // hello <- solo in modalità Wifi CLIENT
     server.on ("/status", handleStatus);            // status display
+    server.on ("/picprog", handlePicProg);          // verify / start PIC firmware programming
     server.on ("/setting", handleSetting);          // setup wifi client
     server.on ("/reset", handleReset);              // reset app  ?device= <esp>|<pic>
-    server.on ("/request", handleRequest);          // mappa richiesta comandi scs
-    server.on ("/gate.htm", handleGate);            // esecuzione comando scs
-    server.on ("/gate", handleGate);                // esecuzione comando scs
+    server.on ("/request", handleRequest);          // mappa richiesta comandi scs/knx
+    server.on ("/gate.htm", handleGate);            // esecuzione comando scs/knx
+    server.on ("/gate", handleGate);                // esecuzione comando scs/knx
     server.on ("/callback", handleCallback);        // richiesta setup callback http
     server.on ("/backsetting", handleBackSetting);  // setup callbackhttp
     server.on ("/mqttconfig", handleMqttConfig);    // richiesta setup mqtt
@@ -150,6 +150,7 @@ unsigned int http_port = 80;
 #define ID_MY "interfaccia scs"
 #endif
 // =======================================================================================================================
+#define PICPATH "/pic" _modo "gate.bin"
 
 #define MYPFX  _modo
 
@@ -266,7 +267,27 @@ char internal;
 unsigned char devIx = 0;
 unsigned char devCtr = 0;
 char uartSemaphor = 0;
-
+// =======================================================================================================================
+enum _PICPROG_SM
+{
+    PICPROG_FREE = 0,
+    PICPROG_START,
+    PICPROG_REQUEST_WAIT,
+    PICPROG_REQUEST_OK,
+    PICPROG_FLASH_BLOCK,
+    PICPROG_FLASH_WAIT,
+    PICPROG_FLASH_END,
+    PICPROG_ERROR
+} sm_picprog = PICPROG_FREE;
+WORD_VAL prog_address;
+int    prog_error;
+int    prog_retry = 0;
+String prog_msg; 
+#define PICBUF 64
+char   prog_buffer[16];
+char   prog_file_data[PICBUF];
+char   prog_mode;
+File   picFw;
 // =======================================================================================================================
 
 #define INNERWAIT   90  // inner loop delay
@@ -2263,8 +2284,98 @@ void handleStatus()
   content = "";
 }
 // =============================================================================================
+void handlePicProg(void)          // verify / start PIC firmware programming
+{
+  // ?program= <Y>|<T>
 
+  content = "<!DOCTYPE HTML>\r\n<html>Hello from ESP_" _MODO "GATE " _FW_VERSION;
+  content += " at ";
+  content += WiFi.localIP().toString();
+  content += "<p><ol>";
 
+  if (sm_picprog == PICPROG_FREE)
+  {
+    Serial.flush();
+    Serial.write('@');    // 
+    Serial.write('q');    // query PIC fw version
+    delay(50);            // wait 50ms
+    char sl = 0;
+    if (Serial.available() )
+    {
+      while (Serial.available() && (sl < 15))
+      {
+        picfwVersion[sl++] = Serial.read();        // receive from serial USB
+        delayMicroseconds(INNERWAIT);
+      }
+      picfwVersion[0] = '>';
+      picfwVersion[sl] = 0;
+    }
+  }
+  
+  content += "<li>";
+  content += "PIC fw version: ";
+  content += picfwVersion;
+  content += "</li>";
+
+  if (sm_picprog == PICPROG_FREE)
+  {
+    String s = "nothing";
+    if (SPIFFS.begin()) 
+    {
+      String path = "/version.txt";
+
+      if (SPIFFS.exists(path)) 
+      {
+        File f = SPIFFS.open(path, "r");
+        if (f) 
+        {
+          while (f.position()<f.size())
+          {
+            s=f.readStringUntil('\n');
+            s.trim();
+          } 
+          f.close();
+        }
+      }
+    }
+
+    content += "<li>";
+    content += "NEW fw version: ";
+    content += s;
+    content += "</li>";
+    content += "<li>";
+    content += "last fw update rc: ";
+  }
+  else
+  {
+    content += "<li>";
+    content += "current update: ";
+  }
+  
+  content += prog_msg;
+  content += " - retry: ";
+  content += String(prog_retry,DEC);
+  content += "</li>";
+
+  content += "</ol>";
+  content += "</form></html>";
+
+  String param = server.arg("program");
+  if (param == "Y")
+  {
+     prog_mode = 2;  // programmazione vera
+     sm_picprog = PICPROG_START;
+  }
+  if (param == "T")
+  {
+     prog_mode = 3;  // programmazione di prova
+     sm_picprog = PICPROG_START;
+  }
+
+  server.send(200, "text/html", content);
+  content = "";
+}
+// =============================================================================================
 // -----------------------------------------------------------------------------------------------------------------------------------------------
 void createWebServer(int webtype)
 // -----------------------------------------------------------------------------------------------------------------------------------------------
@@ -2282,6 +2393,7 @@ void createWebServer(int webtype)
   server.on ("/setting", handleSetting);          // setup wifi client
   server.on ("/reset", handleReset);              // reset app
   server.on ("/status", handleStatus);            // status app
+  server.on ("/picprog", handlePicProg);          // verify / start PIC firmware programming
   server.on ("/request", handleRequest);          // mappa richiesta comandi scs
   server.on ("/gate.htm", handleGate);            // esecuzione comando scs
   server.on ("/gate", handleGate);                // esecuzione comando scs
@@ -2730,6 +2842,7 @@ void setup() {
 
   char forceAP = 0;
   char jumperOpen;
+  prog_msg = "no info";
 
   //  system_update_cpu_freq(160);
   //  unsigned char frq = ESP.getCpuFreqMHz(); // returns the CPU frequency in MHz as an unsigned 8-bit integer
@@ -2879,7 +2992,8 @@ void setup() {
     forceAP = 0;
     Serial.println("r: Display router mode");
   }
-  
+
+/*  
   if (serIniOption == 'f')
   {
     Serial.println("f: test spiffs");
@@ -2892,16 +3006,7 @@ void setup() {
     {
       Serial.println("Unable to activate SPIFFS");
     }
-/*
-    File root = SPIFFS.open("/");
-    File file = root.openNextFile();
-    while(file){
-      Serial.print("FILE: ");
-      Serial.println(file.name());
- 
-      file = root.openNextFile();
-    }    
-*/
+
     String str = "";
     Dir dir = SPIFFS.openDir("/");   
     while (dir.next()) {
@@ -2941,10 +3046,8 @@ void setup() {
     }
     else 
       Serial.println("/version.txt not found");
-        
-        
     
-    path = "/espknxgate.bin";
+    path = PICPATH;
     Serial.println("handleFileRead: " + path);
 
     if (SPIFFS.exists(path)) 
@@ -2964,9 +3067,6 @@ void setup() {
         
         char buffer[20];
         s=f.readBytes(buffer, 16);
-        
-  //              char hBuffer[32];
-  //              sprintf(hBuffer, " %02X%02X %02X%02X %02X %02X%02X %02X", replyBuffer[1], replyBuffer[2], replyBuffer[3], replyBuffer[4], replyBuffer[5], replyBuffer[6], replyBuffer[7], replyBuffer[8]);
         Serial.printf("%02X %02X %02X %02X  %02X %02X %02X %02X", buffer[0], buffer[1], buffer[2], buffer[3], buffer[4], buffer[5], buffer[6], buffer[7]);
         
         f.close();
@@ -2974,22 +3074,13 @@ void setup() {
       Serial.println();
     }
     else 
-      Serial.println("/espknxgate.bin not found");
-        
-        
-        
-        
-        
-        
+      Serial.println(PICPATH " not found");
         
     SPIFFS.end();
   }
-  
+*/  
     
 #endif
-
-
-
 
 
 
@@ -3099,12 +3190,6 @@ void setup() {
     picfwVersion[0] = '>';
     picfwVersion[sl] = 0;
   }
-
-
-
-
-
-
 
 
 
@@ -3794,6 +3879,14 @@ void loop() {
     countRestart--;
     if (countRestart == 0)  ESP.restart();
   }
+
+
+
+if (sm_picprog == PICPROG_FREE)
+{
+// ========================================== NORMAL RUN ====================================================
+
+
 
       // ==================================== TCP server ====================================================
 #ifdef USE_TCPSERVER
@@ -5289,11 +5382,15 @@ void loop() {
         bufNr++;
       }
       // ===============================================================================================================
-      
-      
 
-
-
+// =======================================end NORMAL RUN ====================================================
+}
+else
+{      
+// ========================================== PICPROG RUN ====================================================
+   PicProg();
+// =======================================end PICPROG RUN ====================================================
+}
       
       // =====================================================================================================
       // =====================================================================================================
@@ -5301,8 +5398,242 @@ void loop() {
         server.handleClient();
       // =====================================================================================================
       // =====================================================================================================
-    }
+}
 
+// =====================================================================================================
+// PicProg
+// =====================================================================================================
+void PicProg(void)
+{
+   String path = PICPATH;
+   int s, l, progptr;
+   char bLenght;
+   char sbuf[8];
+   WORD_VAL block_check;
+   
+   switch (sm_picprog)
+   {
+    case PICPROG_FREE:
+	  break;
+//------------------------------------------------------
+    case PICPROG_START:
+      if (!SPIFFS.begin()) 
+      {
+         sm_picprog = PICPROG_ERROR;
+         prog_error = 1;
+         prog_msg = "SPIFFS error";
+      } else 
+      {
+         prog_error = 0;
+         prog_retry = 0;
+         prog_address.Val = 0;
+         prog_msg = "running";
+      }
+
+      if (SPIFFS.exists(path)) 
+      {
+         picFw = SPIFFS.open(path, "r");
+         if (!picFw) 
+         {
+           sm_picprog = PICPROG_ERROR;;
+           prog_error = 11;
+           prog_msg = PICPATH " not exists";
+         } else 
+         {
+           Serial.write('@');
+           Serial.write(0x11);   // autoprogram request
+           sm_picprog = PICPROG_REQUEST_WAIT;
+           Serial.flush();
+         }
+      }
+      else 
+      {
+         sm_picprog = PICPROG_ERROR;
+         prog_error = 12;
+         prog_msg = PICPATH " not found";
+      }
+	  break;
+
+//------------------------------------------------------
+    case PICPROG_REQUEST_WAIT:
+      Serial.setTimeout(100); // timeout calcolato per 80bytes uart (tx/rx) + program time (?)
+      l = Serial.readBytes(&bLenght, 1);
+      if (l == 1)
+      {
+          l = Serial.readBytes(sbuf, bLenght);
+          if (l == 4)
+          {
+				//   04 10 07 00 00   (l=4, destination=10, format=07, data=00 00      
+             if ( (sbuf[0] == 0x10) && (sbuf[1] == 0x07))   
+                 sm_picprog = PICPROG_REQUEST_OK;
+             else
+             {
+               sm_picprog = PICPROG_ERROR;
+               prog_error = 21;
+               prog_msg = "PIC answer error at @0x11";
+             }
+          }
+          else      
+          {
+            sm_picprog = PICPROG_ERROR;
+            prog_error = 22;
+            prog_msg = "PIC answer wrong at @0x11";
+          }
+      }
+      else 
+      {
+         sm_picprog = PICPROG_ERROR;
+         prog_error = 23;
+         prog_msg = "PIC don't answer at @0x11";
+      }
+	  break;
+
+//------------------------------------------------------
+    case PICPROG_REQUEST_OK:
+      l=picFw.readBytes(prog_file_data, PICBUF);
+      sm_picprog = PICPROG_FLASH_BLOCK;
+      while (l < PICBUF)
+      {
+         prog_file_data[l++] = 0xFF;
+      }
+	  break;
+
+//------------------------------------------------------
+    case PICPROG_FLASH_BLOCK:
+//    vb6:  WriteBuf (Chr(Len(sWrite) + 2) + Chr(10) + Chr(7) + sWrite)
+
+// compute checksum      
+      block_check.Val = 0;
+      for (s=0; s < PICBUF; s++)
+      {
+         block_check.Val += prog_file_data[s];
+      }
+      if ((prog_address.byte.HB == 0xF0) || (block_check.Val == PICBUF * 255))
+      {
+         sm_picprog = PICPROG_FLASH_END;
+         break;
+      }
+
+      // block 1: firmware block address
+      //   06 10 07 01 00 00 40 
+      prog_buffer[0] = 6;     // data length
+      prog_buffer[1] = 0x10;  // from
+      prog_buffer[2] = 0x07;  // format
+      prog_buffer[3] = 0x01;  // command
+      
+      prog_buffer[4] = prog_address.byte.LB;  // address LB
+      prog_buffer[5] = prog_address.byte.HB;  // address HB
+      prog_buffer[6] = 64;    // data block length (command 0x40)
+      Serial.write(prog_buffer, 7);
+      
+      
+      
+      // block 2-3-4-5-6-7-8-9: firmware block data
+      //   10 10 07 xx xx xx xx xx xx xx xx 
+
+      progptr = 0;
+      for (s=0; s < 8; s++)
+      {
+        prog_buffer[0] = 10;     // data length
+        prog_buffer[1] = 0x10;  // from
+        prog_buffer[2] = 0x07;  // format
+        
+        prog_buffer[3] = prog_file_data[progptr++];
+        prog_buffer[4] = prog_file_data[progptr++];
+        prog_buffer[5] = prog_file_data[progptr++];
+        prog_buffer[6] = prog_file_data[progptr++];
+        prog_buffer[7] = prog_file_data[progptr++];
+        prog_buffer[8] = prog_file_data[progptr++];
+        prog_buffer[9] = prog_file_data[progptr++];
+        prog_buffer[10] = prog_file_data[progptr++];
+        Serial.write(prog_buffer, 11);
+     }
+
+      // block 10: firmware block end
+      //   05 10 07 02 ck ck
+      prog_buffer[0] = 5;     // data length
+      prog_buffer[1] = 0x10;  // from
+      prog_buffer[2] = 0x07;  // format
+      prog_buffer[3] = prog_mode;  // command 2: true write    3: test
+      
+      prog_buffer[4] = block_check.byte.LB;
+      prog_buffer[5] = block_check.byte.HB;
+      Serial.write(prog_buffer, 6);
+      
+      sm_picprog = PICPROG_FLASH_WAIT;
+	  break;
+
+    case PICPROG_FLASH_WAIT:
+      l = Serial.readBytes(&bLenght, 1);
+      if (l == 1)
+      {
+          l = Serial.readBytes(sbuf, bLenght);
+          if (l == 8)
+          {
+             //   08 10 07 02 00 F1 1D F1 1D  (l=8, destin=10, fmt=07, req=02 write - 03=test )
+             //               ^^ d(1)=00 ok   01 protect   >0xF0 error
+             if ((sbuf[3] >= 0xF0) && (sbuf[3] != 0xFE)) 
+             {  
+                sm_picprog = PICPROG_FLASH_BLOCK;
+                if (++prog_retry > 100)
+                {
+                  sm_picprog = PICPROG_ERROR;
+                  prog_error = 24;
+                  prog_msg = "PIC flash too retry: ";
+                  sprintf(prog_buffer, "%02X%02X %02X%02X", sbuf[4], sbuf[5], sbuf[6], sbuf[7]);
+                  prog_msg += prog_buffer;
+                }
+             }
+             else
+             {  // ok
+                prog_address.Val += PICBUF;
+                sm_picprog = PICPROG_REQUEST_OK;
+             }
+          }
+          else      
+          {
+            sm_picprog = PICPROG_ERROR;
+            prog_error = 24;
+            prog_msg = "PIC answer wrong at flashW";
+          }
+      }
+      else 
+      {
+         sm_picprog = PICPROG_ERROR;
+         prog_error = 25;
+         prog_msg = "PIC don't answer at flashW";
+      }
+	  break;
+
+    case PICPROG_ERROR:
+// prog_error 1-9 nothing to close     10-20 close spifs     20-30 close file
+      if (prog_error >= 19)
+          picFw.close();
+      if (prog_error >= 9)
+          SPIFFS.end();
+      sm_picprog = PICPROG_FREE;
+      char hBuffer[20];
+      sprintf(hBuffer, " - last addr: %02X%02X", prog_address.byte.HB, prog_address.byte.LB);
+      prog_msg += hBuffer;
+	  break;
+	  
+    case PICPROG_FLASH_END:
+//    Serial.write(0x80);  // flash programming end
+      
+      //   03 10 07 80
+      prog_buffer[0] = 3;     // data length
+      prog_buffer[1] = 0x10;  // from
+      prog_buffer[2] = 0x07;  // format
+      prog_buffer[3] = 0x80;  // command
+      Serial.write(prog_buffer, 4);
+
+      prog_msg = "PIC flash OK";
+      picFw.close();
+      SPIFFS.end();
+      sm_picprog = PICPROG_FREE;
+	  break;
+   }
+}
 
 // =====================================================================================================
 // DEVADDR device_BUS_id[DEV_NR]; // pointer: eventuale id alexa - contenuto: device address reale (scs o knx) e tipo
