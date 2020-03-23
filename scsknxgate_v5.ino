@@ -1,10 +1,13 @@
 //----------------------------------------------------------------------------------
 #define _FW_NAME     "SCSKNXGATE"
-#define _FW_VERSION  "VER_5.0603 "
+#define _FW_VERSION  "VER_5.0606 "
 #define _ESP_CORE    "esp8266-2.5.2"
 //----------------------------------------------------------------------------------
 //        ---- attenzione - porta http: 8080 <--se alexaParam=y--------------
 //----------------------------------------------------------------------------------
+// 5.0606 modifica update pic flash - anche boot - tolta condizione 64xFF
+// 5.0605 update all pic flash - aborted
+// 5.0604 /status aggiorna frequenza led PIC 
 // 5.0603 update PIC fw from spiffs 
 // 5.0598 test 64K spiffs con files di update PIC
 // 5.0596 64K spiffs per futura versione
@@ -24,8 +27,8 @@
 //----------------------------------------------------------------------------------
 //
 
-#define KNX
-//#define SCS
+//#define KNX
+#define SCS
 //#define DEBUG
 //#define MQTTLOG
 #define BLINKLED     // funziona solo su ESP01S //
@@ -107,6 +110,7 @@
 #include "PubSubClient.h"
 #include <WiFiUdp.h>
 #include <fs.h>
+#include <Arduino.h>
 #include <ArduinoOTA.h>
 
 #include <EEPROM.h>
@@ -276,6 +280,7 @@ enum _PICPROG_SM
     PICPROG_REQUEST_OK,
     PICPROG_FLASH_BLOCK,
     PICPROG_FLASH_WAIT,
+    PICPROG_FLASH_SWAP,    // non usato
     PICPROG_FLASH_END,
     PICPROG_ERROR
 } sm_picprog = PICPROG_FREE;
@@ -2016,7 +2021,7 @@ void MqttCallback(char* topic, byte* payload, unsigned int length)
       requestBuffer[requestLen++] = 0x01;             // from device
       char a1 = highByte(device);
       char a2 = lowByte(device);
-      requestBuffer[requestLen++] = a1; // to   linesector
+      requestBuffer[requestLen++] = a1;  // to   linesector
       requestBuffer[requestLen++] = a2;  // to   device
       requestBuffer[requestLen++] = command;          // command
 #endif
@@ -2046,22 +2051,16 @@ void handleReset()
       client.setServer(mqtt_server, atoi(mqtt_port));    // Configure MQTT connexion
       client.setCallback(MqttCallback);                  // callback function to execute when a MQTT message
       content = "{\"status\":\"OK\"}";
-      statusCode = 200;
     }
     else
     {
       content = "{\"status\":\"ERROR - missing broker IPaddress\"}";
-      statusCode = 200;
     }
-    server.send(statusCode, "text/html", content);
-    content = "";
   }
   else if (param == "esp")
   {
     countRestart = 200;
     content = "{\"status\":\"OK - resetting...\"}";
-    statusCode = 200;
-    server.send(statusCode, "text/html", content);
   }
   else if (param == "pic")
   {
@@ -2071,17 +2070,25 @@ void handleReset()
     requestBuffer[requestLen++] = '|';
     content = "{\"status\":\"OK\"}";
     uartSemaphor = 0;
-    statusCode = 200;
-    server.send(statusCode, "text/html", content);
-    content = "";
+  }
+  else if (param == "all")
+  {
+    uartSemaphor = 1;
+    requestBuffer[requestLen++] = '@';
+    requestBuffer[requestLen++] = '|';
+    requestBuffer[requestLen++] = '|';
+    uartSemaphor = 0;
+    countRestart = 200;
+    content = "{\"status\":\"OK - resetting...\"}";
   }
   else
   {
     content = "{\"invreq  use device=esp  or  device=pic  or  device=mqtt\"}";
-    statusCode = 200;
-    server.send(statusCode, "text/html", content);
-    content = "";
   }
+  
+  statusCode = 200;
+  server.send(statusCode, "text/html", content);
+  content = "";
 }
 // =============================================================================================
 
@@ -2100,12 +2107,16 @@ void handleStatus()
 
   if (connectionType == 1) // web server AP
   {
+    Serial.write('@');   // set led lamps
+    Serial.write(0xF2);  // set led lamps high-freq (AP mode)
     content += "<li>";
     content += "Working as AP ";
     content += "</li>";
   }
   else
   {
+    Serial.write('@');   // set led lamps
+    Serial.write(0xF1);  // set led lamps std-freq (client mode)
     content += "<li>";
     content += "System frequency (Mhz): ";
     unsigned char frq = ESP.getCpuFreqMHz(); // returns the CPU frequency in MHz as an unsigned 8-bit integer
@@ -2293,6 +2304,22 @@ void handlePicProg(void)          // verify / start PIC firmware programming
   content += WiFi.localIP().toString();
   content += "<p><ol>";
 
+
+
+
+  String param = server.arg("program");
+  if (param == "Y")
+  {
+     prog_mode = 2;  // programmazione vera
+     sm_picprog = PICPROG_START;
+  }
+  if (param == "T")
+  {
+     prog_mode = 3;  // programmazione di prova
+     sm_picprog = PICPROG_START;
+  }
+
+
   if (sm_picprog == PICPROG_FREE)
   {
     Serial.flush();
@@ -2311,15 +2338,17 @@ void handlePicProg(void)          // verify / start PIC firmware programming
       picfwVersion[sl] = 0;
     }
   }
-  
+
+
   content += "<li>";
   content += "PIC fw version: ";
   content += picfwVersion;
   content += "</li>";
+  String s = "working...";
 
   if (sm_picprog == PICPROG_FREE)
   {
-    String s = "nothing";
+    s = "nothing";
     if (SPIFFS.begin()) 
     {
       String path = "/version.txt";
@@ -2359,18 +2388,6 @@ void handlePicProg(void)          // verify / start PIC firmware programming
 
   content += "</ol>";
   content += "</form></html>";
-
-  String param = server.arg("program");
-  if (param == "Y")
-  {
-     prog_mode = 2;  // programmazione vera
-     sm_picprog = PICPROG_START;
-  }
-  if (param == "T")
-  {
-     prog_mode = 3;  // programmazione di prova
-     sm_picprog = PICPROG_START;
-  }
 
   server.send(200, "text/html", content);
   content = "";
@@ -2864,6 +2881,9 @@ void setup() {
       delay(100);            // wait 100ms
     }
   }
+  Serial.write('@');    // 
+  Serial.write(0xF0);   // set led lamps low-freq (in progress mode)
+  delay(10);            // wait 10ms
 //===============================jumper test========================================
 //  jumperOpen = 0;
   pinMode(0, INPUT);
@@ -3082,7 +3102,9 @@ void setup() {
     
 #endif
 
-
+  Serial.write('@');    // 
+  Serial.write(0xF0);   // set led lamps low-freq (in progress mode)
+  delay(10);            // wait 10ms
 
   String esid;
   esid = ReadStream(&esid[0], E_SSID, 32, 2);  // tipo=0 binary array   1:ascii array   2:ascii string
@@ -3173,7 +3195,7 @@ void setup() {
 
 
   Serial.write('@');    // 
-  Serial.write(0xF0);   // set led lamps low-freq (client mode)
+  Serial.write(0xF0);   // set led lamps low-freq (in progress mode)
   delay(10);            // wait 10ms
   Serial.flush();
   Serial.write('@');    // 
@@ -3288,6 +3310,9 @@ void setup() {
 
     if (testWifi())   // wifi connesso
     {
+      Serial.write('@');   // set led lamps
+      Serial.write(0xF1);  // set led lamps std-freq (client mode)
+
       WiFi.mode(WIFI_STA);
       //      WiFi.disconnect();
       launchWeb(0);
@@ -3733,6 +3758,8 @@ void setup() {
   } //  (( esid.length() > 1 ) && (jumperOpen == 1) && (forceAP == 0)) // connessione al router
   else
   {
+    Serial.write('@');   // set led lamps
+    Serial.write(0xF2);  // set led lamps high-freq (AP mode)
     // =================================================================================================
     // access point mode
     // =================================================================================================
@@ -5508,7 +5535,8 @@ void PicProg(void)
       {
          block_check.Val += prog_file_data[s];
       }
-      if ((prog_address.byte.HB == 0xF0) || (block_check.Val == PICBUF * 255))
+      if  (prog_address.byte.HB == 0xF0)
+//    if ((prog_address.byte.HB == 0xF0) || (block_check.Val == PICBUF * 255))
       {
          sm_picprog = PICPROG_FLASH_END;
          break;
@@ -5615,6 +5643,18 @@ void PicProg(void)
       char hBuffer[20];
       sprintf(hBuffer, " - last addr: %02X%02X", prog_address.byte.HB, prog_address.byte.LB);
       prog_msg += hBuffer;
+	  break;
+	  
+    case PICPROG_FLASH_SWAP:
+//    Serial.write(0x61);  // flash programming end
+      //   03 10 07 61
+      prog_buffer[0] = 3;     // data length
+      prog_buffer[1] = 0x10;  // from
+      prog_buffer[2] = 0x07;  // format
+      prog_buffer[3] = 0x61;  // command
+      Serial.write(prog_buffer, 4);
+      prog_address.Val += PICBUF;
+      sm_picprog = PICPROG_REQUEST_OK;
 	  break;
 	  
     case PICPROG_FLASH_END:
