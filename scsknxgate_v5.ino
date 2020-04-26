@@ -1,10 +1,15 @@
 //----------------------------------------------------------------------------------
 #define _FW_NAME     "SCSKNXGATE"
-#define _FW_VERSION  "VER_5.0606 "
+#define _FW_VERSION  "VER_5.0613 "
 #define _ESP_CORE    "esp8266-2.5.2"
 //----------------------------------------------------------------------------------
 //        ---- attenzione - porta http: 8080 <--se alexaParam=y--------------
+
+// SCS WARNING - LA PUBBLICAZIONE AVVIENE SOLO SE PRIMA E' PERVENUTO UN /cmd qualunque da mqtt !!!!!!!!!!!!!!!
+//        finchè non invia un comando che inizia con: '§'  
+
 //----------------------------------------------------------------------------------
+// 5.0613 scs - trattamento cmd generali cover
 // 5.0606 modifica update pic flash - anche boot - tolta condizione 64xFF
 // 5.0605 update all pic flash - aborted
 // 5.0604 /status aggiorna frequenza led PIC 
@@ -408,6 +413,7 @@ typedef union _DEVICE    {
 // ==============================================================================================================
 DEVADDR device_BUS_id[DEV_NR]; // index:device index,  contenuto: device address reale (scs o knx) e tipo
 char alexa_BUS_ix[DEV_NR];     // index:id alexa, contenuto: device index
+
 // ==============================================================================================================
 #define E_ALEXA_DESC_DEVICE 836 // device description max DEV_NR x E_ALEXA_DESC_LEN char 
 #define E_ALEXA_DESC_LEN     20 // device description max length - top 
@@ -1632,6 +1638,19 @@ void MqttCallback(char* topic, byte* payload, unsigned int length)
 
   String payloads = String(packetBuffer);
   String topicString = String(topic);
+          
+#ifdef USE_TCPSERVER
+  if ((tcpuart == 2) && (tcpclient) && (tcpclient.connected())) 
+  {
+    String log = "\r\nsub: ";
+    log += topicString;
+    log += " ";
+    log += payloads;
+    tcpclient.write((char*)&log[0], log.length());
+    tcpclient.flush(); 
+  }
+#endif
+          
 
   if (firstTime == 0) setFirst();
 
@@ -2271,7 +2290,7 @@ void handleStatus()
   content += "</li>";
 
 // @Qr
-  Serial.write('@');    // command mode 
+  Serial.write('§');    // command mode 
   Serial.write('Q');    // command: query 
   Serial.write('r');    // query PIC fw version
   delay(50);            // wait 50ms
@@ -2323,7 +2342,7 @@ void handlePicProg(void)          // verify / start PIC firmware programming
   if (sm_picprog == PICPROG_FREE)
   {
     Serial.flush();
-    Serial.write('@');    // 
+    Serial.write('§');    // 
     Serial.write('q');    // query PIC fw version
     delay(50);            // wait 50ms
     char sl = 0;
@@ -4051,22 +4070,23 @@ if (sm_picprog == PICPROG_FREE)
             String smaxpos = tcpJarg(tcpBuffer,"\"maxp\"");
             char *ch;
             maxp.Val = (int)strtoul(&smaxpos[0], &ch, 10);
+            requestBuffer[requestLen++] = '§';
+            requestBuffer[requestLen++] = 'U';
+            requestBuffer[requestLen++] = '8';
+#ifdef KNX
+            requestBuffer[requestLen++] = linesector;
+#endif
+            requestBuffer[requestLen++] = device;     // device id
+            requestBuffer[requestLen++] = devtype;    // device type
+            requestBuffer[requestLen++] = maxp.byte.HB;    // max position H
+            requestBuffer[requestLen++] = maxp.byte.LB;    // max position L
+            immediateSend();
+            immediateReceive('k');
+            delay(100);
           }
           else
             maxp.Val = 0;
             
-          requestBuffer[requestLen++] = '§';
-          requestBuffer[requestLen++] = 'U';
-          requestBuffer[requestLen++] = '8';
-#ifdef KNX
-          requestBuffer[requestLen++] = linesector;
-#endif
-          requestBuffer[requestLen++] = device;     // device id
-          requestBuffer[requestLen++] = devtype;    // device type
-          requestBuffer[requestLen++] = maxp.byte.HB;    // max position H
-          requestBuffer[requestLen++] = maxp.byte.LB;    // max position L
-          immediateSend();
-          immediateReceive('k');
 
 #ifdef DEBUG 
           sprintf(tcpBuffer, "{\"device\":\"%02X\",\"type\":\"%d\",\"maxp\":\"%d\"\
@@ -4085,6 +4105,7 @@ if (sm_picprog == PICPROG_FREE)
         requestBuffer[requestLen++] = '9';
         immediateSend();
         immediateReceive('k');
+        delay(100);
       }  // cover == "false"
       
       String devclear = tcpJarg(tcpBuffer,"\"devclear\"");
@@ -4504,6 +4525,7 @@ if (sm_picprog == PICPROG_FREE)
 
 
   // ====================================== receive from SERIAL - send to UDP =====================
+  // rx: 04 31 00 12 00 
 
 
   replyLen = 0;
@@ -4543,9 +4565,11 @@ if (sm_picprog == PICPROG_FREE)
     }
     else
     {
+  // rx: 04 31 00 12 00 
       internal = 0;
       replyBuffer[replyLen++] = prefix;
       lmax = 255;
+
 #ifdef MQTTLOG
       if (mqtt_log == 'y')
       {
@@ -4920,27 +4944,74 @@ if (sm_picprog == PICPROG_FREE)
       if (replyBuffer[2] == 0xB1)   // <------------ indirizzato a TUTTI i devices
       {
         char nomeDevice[4];
+        String topicPfx;
         const char* cPayload;
         const char* cTopic;
-        if (action == 0)
-          payload = "ON";
-        else if (action == 1)
-          payload = "OFF";
-
+        char typeAll = 99;
+        switch (action)
+        {
+          case 0:
+            typeAll = 1;
+            payload = "ON";
+            topicPfx = SWITCH_STATE;
+            break;
+          case 1:
+            typeAll = 1;
+            payload = "OFF";
+            topicPfx = SWITCH_STATE;
+            break;
+          case 8:
+            typeAll = 8;
+            if ((domoticMode == 'h') || (domoticMode == 'H'))
+                payload = "open";
+            else
+                payload = "OFF";
+            topicPfx = COVER_STATE;
+            break;
+          case 9:
+            typeAll = 8;
+            if ((domoticMode == 'h') || (domoticMode == 'H'))
+                payload = "closed";
+            else
+                payload = "ON";
+            topicPfx = COVER_STATE;
+            break;
+          case 0x0A:
+            typeAll = 8;
+            payload = "STOP";
+            topicPfx = COVER_STATE;
+            break;
+        }
         devx = 1;
         while ((devx < DEV_NR) && (device_BUS_id[devx].addressW))
         {
           devtype = device_BUS_id[devx].deviceType;
-          if ((devtype == 1) || (devtype == 3))  // dimmer
+          if (((typeAll == 1) && (devtype == 3))  // dimmer
+            || (typeAll == devtype))  // switch - cover
           {
             sprintf(nomeDevice, "%02X", device_BUS_id[devx].address);  // to
-            topic = SWITCH_STATE;
+            topic = topicPfx;
             topic += nomeDevice;
-            cPayload = payload.c_str();
-            cTopic = topic.c_str();
-            client.publish(cTopic, cPayload, mqtt_persistence);
-            devx++;
+            
+#ifdef USE_TCPSERVER
+            if ((tcpuart == 2) && (tcpclient) && (tcpclient.connected())) 
+            {
+              String log = "\r\npub: ";
+              log += topic;
+              log += " ";
+              log += payload;
+              tcpclient.write((char*)&log[0], log.length());
+              tcpclient.flush(); 
+            }
+//          else
+#endif
+            {
+              cPayload = payload.c_str();
+              cTopic = topic.c_str();
+              client.publish(cTopic, cPayload, mqtt_persistence);
+            }
           }
+          devx++;
         }
         device = 0;
         devtype = 0;
@@ -5049,6 +5120,20 @@ if (sm_picprog == PICPROG_FREE)
 
     // ======================================== P U B B L I C A Z I O N E ===========================================
           const char* cTopic = topic.c_str();
+          
+          
+#ifdef USE_TCPSERVER
+          if ((tcpuart == 2) && (tcpclient) && (tcpclient.connected())) 
+          {
+            String log = "\r\npub: ";
+            log += topic;
+            log += " ";
+            log += payload;
+            tcpclient.write((char*)&log[0], log.length());
+            tcpclient.flush(); 
+          }
+#endif
+          
           if (payload == "")
           {
               char cPayload[24];
@@ -5081,6 +5166,19 @@ if (sm_picprog == PICPROG_FREE)
             topic += nomeDevice;
             const char* cTopic = topic.c_str();
             char cPayload[8];
+          
+#ifdef USE_TCPSERVER
+            if ((tcpuart == 2) && (tcpclient) && (tcpclient.connected())) 
+            {
+              String log = "\r\npub: ";
+              log += topic;
+              log += " ";
+              log += payload;
+              tcpclient.write((char*)&log[0], log.length());
+              tcpclient.flush(); 
+            }
+#endif
+          
             sprintf(cPayload, "%02X%02X%02X", replyBuffer[3], replyBuffer[4], replyBuffer[5]);
             client.publish(cTopic, cPayload, mqtt_persistence);
           }
