@@ -1,6 +1,6 @@
 //----------------------------------------------------------------------------------
 #define _FW_NAME     "SCSKNXGATE"
-#define _FW_VERSION  "VER_5.0613 "
+#define _FW_VERSION  "VER_5.0614 "
 #define _ESP_CORE    "esp8266-2.5.2"
 //----------------------------------------------------------------------------------
 //        ---- attenzione - porta http: 8080 <--se alexaParam=y--------------
@@ -9,6 +9,7 @@
 //        finchè non invia un comando che inizia con: '§'  
 
 //----------------------------------------------------------------------------------
+// 5.0614 setup wifi da seriale con comando "S"
 // 5.0613 scs - trattamento cmd generali cover
 // 5.0606 modifica update pic flash - anche boot - tolta condizione 64xFF
 // 5.0605 update all pic flash - aborted
@@ -3015,8 +3016,9 @@ void setup() {
 
   // read eeprom for ssid and pass
   Serial.print("Read EEPROM ssid: ");
+  
 #else
-
+// -------------------------------------- NO DEBUG -------------------------------------------
 //  Serial.setTimeout(5000);
   Serial.setTimeout(1000);
   Serial.readBytes(&serIniOption, 1);
@@ -3026,10 +3028,18 @@ void setup() {
     forceAP = 1;
     Serial.println("a: AP mode");
   }
+  else
   if (serIniOption == 'r')
   {
     forceAP = 0;
     Serial.println("r: Display router mode");
+  }
+  else
+  if (serIniOption == 'S')
+  {
+    forceAP = 0;
+    SerialSetup();
+//    serIniOption = 'r';    
   }
 
 /*  
@@ -6179,5 +6189,68 @@ char SendToPIC(char bufNr)
      bufSemaphor = -1;
    } // len > 0
 }  
+// =====================================================================================================
+// =====================================================================================================
+void SerialSetup(void)
+{
+	String stmp;
+    Serial.setTimeout(15000); // 15 sec timeout
+    Serial.println("S: _________serial setup________");
+    
+    SerialSetupParam("enter wifi SSID [", E_SSID);
+    SerialSetupParam("enter wifi password [", E_PASSW);
+    SerialSetupParam("enter ESP ipaddress [", E_IPADDR);
+    SerialSetupParam("enter ROUTER ipaddress [", E_ROUTIP);
+    SerialSetupParam("enter UDP port [", E_PORT);
+ 
+    EEPROM.commit();
+
+    Serial.println("ok...");
+    Serial.setTimeout(1000); // 1 sec timeout
+}
+// =====================================================================================================
+void SerialSetupParam(char* title, int eAdress)
+{
+    String stmp;
+    Serial.print(title);
+    stmp = "";
+    stmp = ReadStream(&stmp[0], eAdress, 32, 2); 
+    if ((stmp != "") && (stmp[0] > 0) && (stmp[0] < 0xFF)) 
+      Serial.print(stmp);
+    Serial.print("] : ");
+    stmp = SerialRead(20000);
+    if (stmp != "")
+    {
+      Serial.println("");
+      Serial.println(stmp);
+      if (stmp == "0")  
+          stmp = "";
+      WriteEEP(stmp, eAdress);
+    }
+    Serial.println("");
+}
+// =====================================================================================================
+String SerialRead(int tout)
+{
+    String stmp;
+    char c;
+    int timeo = 0;
+    do
+    {
+      timeo++;
+      if (Serial.available())
+      {  
+         c=Serial.read();
+         if ((c == '\n') || (c == '\r')|| (c == 0))
+             return stmp;
+         if ((c == '\b') && (stmp != ""))
+             stmp.remove(stmp.length()-1);
+         else
+             stmp += char(c);
+      }
+      delay(1);
+    } while(timeo < tout);
+    return stmp;
+}
 // =====================================================================================================
 // =====================================================================================================
