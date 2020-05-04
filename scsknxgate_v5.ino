@@ -1,6 +1,6 @@
 //----------------------------------------------------------------------------------
 #define _FW_NAME     "SCSKNXGATE"
-#define _FW_VERSION  "VER_5.0614 "
+#define _FW_VERSION  "VER_5.0617 "
 #define _ESP_CORE    "esp8266-2.5.2"
 //----------------------------------------------------------------------------------
 //        ---- attenzione - porta http: 8080 <--se alexaParam=y--------------
@@ -9,8 +9,9 @@
 //        finchè non invia un comando che inizia con: '§'  
 
 //----------------------------------------------------------------------------------
+// 5.0617 knx - trattamento cover con indirizzo base pari - correzione scs B1
 // 5.0614 setup wifi da seriale con comando "S"
-// 5.0613 scs - trattamento cmd generali cover
+// 5.0613 scs - trattamento cmd generali cover B1
 // 5.0606 modifica update pic flash - anche boot - tolta condizione 64xFF
 // 5.0605 update all pic flash - aborted
 // 5.0604 /status aggiorna frequenza led PIC 
@@ -255,7 +256,10 @@ char mqtt_port[6];
 char mqtt_retry = 0;
 char mqtt_log = 0;
 char mqtt_retrylimit = 24; //x 10=240sec (4min) -limite oltre il quale si resetta per broker non disponibile
-char domoticMode;    // d=as domoticz      h=as homeassistant      maiuscolo=pari dispari
+char domoticMode;      // d=as domoticz      h=as homeassistant      maiuscolo=default switches
+
+char domotic_options;  // bit 0: 1= knx - indirizzi base dispari   0= base pari
+
 char alexaParam = 0;
 int  countRestart = 0;
 
@@ -366,7 +370,8 @@ WiFiUDP udpConnection;
 
 // -----------------------------------------------------------------------------------------------------------------------------------------------
 #define MAXEEPROM 4096  // 4096 is the MAX eeprom size in esp8266 
-#define EESIGNATURE     0x5A 
+#define EESIGNATURE_FROM     0x5A 
+#define EESIGNATURE          0x5B 
 
 #define E_SSID   0         // ssid wifi  max 32
 #define E_PASSW  32        // passw wifi max 32
@@ -375,6 +380,7 @@ WiFiUDP udpConnection;
 #define E_PORT   96        // udp port   max 6
 #define E_CALLBACK    102  // http callb max 98
 #define E_EESIGNATURE 200  //            max 1 
+#define E_DOMOTIC_OPTIONS 201 // bit 0:  0=dispari 1=pari
 #define E_MQTT_BROKER 202  // mqtt_server   max 32
 #define E_MQTT_PORT   234  // mqtt_port     max 6
 #define E_DOMOTICMODE 240  // domotic mode  max 1
@@ -663,7 +669,7 @@ void setFirst(void)
   requestBuffer[requestLen++] = 'M';
   requestBuffer[requestLen++] = 'X';
 
-  requestBuffer[requestLen++] = '@';
+//  requestBuffer[requestLen++] = '@';
 
   requestBuffer[requestLen++] = '@';
   requestBuffer[requestLen++] = 'Y';
@@ -676,6 +682,9 @@ void setFirst(void)
 #endif
 #ifdef KNX
   requestBuffer[requestLen++] = '2';
+  requestBuffer[requestLen++] = '@';
+  requestBuffer[requestLen++] = 'O';
+  requestBuffer[requestLen++] = domotic_options;
 #endif
   requestBuffer[requestLen++] = '§';
   requestBuffer[requestLen++] = 'l';
@@ -885,7 +894,13 @@ void handleMqttConfig()
     <label>domotic(h):</label><input name='dom' maxlength=1 value='";
   content += String(domoticMode);
   content += "' style='width:20px'>\
-    <label>log(y):</label><input name='log' maxlength=1 value='";
+      <label>options(xx):</label><input name='dopt' maxlength=2 value='";
+//  content += String(domotic_options);
+  char hBuf[4];
+  sprintf(hBuf, "%02X", domotic_options);
+  content += hBuf;
+  content += "' style='width:20px'>\
+      <label>log(y):</label><input name='log' maxlength=1 value='";
   content += String(mqtt_log);
   content += "' style='width:20px'>\
     <label>persistence(y):</label><input name='persistence' maxlength=1 value='";
@@ -918,6 +933,7 @@ void handleMqttCFG()
   String pswd = server.arg("pswd");
   String log  = server.arg("log");
   String dom  = server.arg("dom");
+  String dopt  = server.arg("dopt");
   String pers  = server.arg("persistence");
   String alex  = server.arg("alexa");
   if (log[0] == 'Y') log[0] = 'y';
@@ -938,6 +954,19 @@ void handleMqttCFG()
     user.toCharArray(mqtt_user, sizeof(mqtt_user));
     pswd.toCharArray(mqtt_password, sizeof(mqtt_password));
 
+    char cdopt[4];
+    dopt.toCharArray(cdopt, 4);
+    char *ch;
+    domotic_options = (char)strtoul(&dopt[0], &ch, 16);
+
+#ifdef KNX
+    requestBuffer[requestLen++] = '§';
+    requestBuffer[requestLen++] = 'O';
+    requestBuffer[requestLen++] = domotic_options;
+#endif
+
+
+
     if (dom.length() == 0) dom = "d";
     domoticMode = dom.charAt(0);  // minuscolo
     if (log.length() == 0) log = "n";
@@ -952,6 +981,7 @@ void handleMqttCFG()
     WriteEEP(broker, E_MQTT_BROKER);
     WriteEEP(port, E_MQTT_PORT);
     WriteEEP(dom[0], E_DOMOTICMODE);
+    WriteEEP(domotic_options, E_DOMOTIC_OPTIONS);
     WriteEEP(user, E_MQTT_USER);
     WriteEEP(pswd, E_MQTT_PSWD);
     WriteEEP(log[0], E_MQTT_LOG);
@@ -1809,24 +1839,64 @@ void MqttCallback(char* topic, byte* payload, unsigned int length)
 
         devtype = 9; // coverpct
 
+
+#ifdef KNX
+        char baseOk = 0;
+        if ((domotic_options & 0x01) == (device & 0x01))
+             baseOk = 1;
+#endif
         if (payloads.substring(0, 4) == "STOP")
+        {
           command = 0;
+
+#ifdef KNX
+          if (!baseOk)
+              device--;      // porta a base
+#endif
+        }
         else if (payloads.substring(0, 2) == "ON")  // discesa - chiudi
+        {
           command = 2;
+#ifdef KNX
+          if (baseOk)
+              device++;      // porta a base+1
+#endif
+        }
         else if (payloads.substring(0, 5) == "CLOSE")  // discesa - chiudi
         {
           command = 2;
+#ifdef KNX
+          if (baseOk)
+              device++;      // porta a base+1
+#endif
         }
         else if (payloads.substring(0, 3) == "OFF") // salita - apri
+        {
           command = 1;
+          
+// in domoticz 
+          
+#ifdef KNX
+          if (baseOk)
+              device++;      // porta a base+1
+#endif
+        }
         else if (payloads.substring(0, 4) == "OPEN") // salita - apri
         {
           command = 1;
+#ifdef KNX
+          if (baseOk)
+              device++;      // porta a base+1
+#endif
         }
         else
         {
           int pct = atoi(packetBuffer);    // percentuale
           command = (unsigned char) pct;
+#ifdef KNX
+          if (!baseOk)
+              device--;      // porta a base
+#endif
         }
       }
   // ----------------------------------------------------------------------------------------------
@@ -1932,18 +2002,23 @@ void MqttCallback(char* topic, byte* payload, unsigned int length)
           dev[4] = 0;
           device = (word)strtoul(dev, &ch, 16);
 
+          char baseOk = 0;
+          if ((domotic_options & 0x01) == (device & 0x01))
+               baseOk = 1;
+
           if (payloads.substring(0, 4) == "STOP")
           {
             command = 0x80;
-            
-// indirizzo deve essere dispari
-            if (!(device & 0x01)) device++;   // indirizzo dispari
+// su STOP indirizzo deve essere base (ex dispari)
+            if (!baseOk)
+                device--;      // porta a base
           }
           else
           {
           
-// indirizzo deve essere pari
-            if (device & 0x01) device++;   // indirizzo pari
+// su OPEN/CLOSE indirizzo deve essere base+1
+            if (baseOk)
+                device++;      // porta a base+1
 
             if (payloads.substring(0, 2) == "ON")   // discesa - chiudi
               command = 0x81;
@@ -2250,6 +2325,12 @@ void handleStatus()
       content += "mqtt model: GENERIC";
     content += "</li>";
   }
+  char hBuf[4];
+  content += "<li>Domotic options: ";
+  sprintf(hBuf, "%02X", domotic_options);
+  content += hBuf;
+  content += "</li>";
+
   if ((mqttopen > 0) || (alexaParam == 'y'))
   {
     content += "<li>known devices in eeprom: ";
@@ -2918,6 +2999,12 @@ void setup() {
   EEPROM.begin(MAXEEPROM);
   
   char eeSignature = EEPROM.read(E_EESIGNATURE);
+  if (eeSignature == EESIGNATURE_FROM)
+  {
+	EEPROM.write(E_EESIGNATURE, EESIGNATURE);
+	EEPROM.write(E_DOMOTIC_OPTIONS, 0x01);
+  }
+  else
   if (eeSignature != EESIGNATURE)
   {
     Serial.println("eeinit");
@@ -2929,6 +3016,7 @@ void setup() {
     }
 	EEPROM.write(E_EESIGNATURE, EESIGNATURE);
 	EEPROM.write(E_DOMOTICMODE, 'H');
+	EEPROM.write(E_DOMOTIC_OPTIONS, 0x01);
 	EEPROM.write(E_MQTT_LOG, 'n');
 	EEPROM.write(E_MQTT_PERSISTENCE, 'y');
 	EEPROM.write(E_ALEXA, 'n');
@@ -3178,6 +3266,8 @@ void setup() {
   Serial.print("domoticMode=");
   Serial.println(domoticMode);
 #endif
+
+  domotic_options = ReadStream(E_DOMOTIC_OPTIONS);  // tipo=0 binary   1:ascii
 
   ReadStream(mqtt_user, E_MQTT_USER, sizeof(mqtt_user), 1);  // tipo=0 binary   1:ascii
 #ifdef DEBUG
@@ -3504,6 +3594,7 @@ void setup() {
               char device = device_BUS_id[devix].address;
 #ifdef KNX
               char linesector = device_BUS_id[devix].linesector;
+              char baseOk = 0;
 #endif
               switch (devtype)
               {
@@ -3629,6 +3720,12 @@ void setup() {
                   break;
 
                 case 8:
+#ifdef KNX
+                  if ((domotic_options & 0x01) == (device & 0x01))
+                       baseOk = 1;
+                  else
+                       baseOk = 0;
+#endif
                   // --------------------------------------- COVER ---------------------------------------------------
                   if ((alexacommand == 2) || (alexacommand == 1)) // spegni / ferma  <--oppure accendi------
                   {
@@ -3637,10 +3734,9 @@ void setup() {
 #endif
 #ifdef KNX
                     command = 0x80;
-                    
-// indirizzo deve essere dispari
-                    if (!(device & 0x01)) device++;   // indirizzo dispari
-
+// su STOP indirizzo deve essere base 
+                    if (!baseOk)
+                        device--;      // porta a base
 #endif
                     fauxmo.setState(alexa_id, stato | 0xC1, value); // 0xc1: dara' errore ma almeno evita il blocco
                   }
@@ -3652,9 +3748,10 @@ void setup() {
 #ifdef KNX
                     command = 0x80;
                     
-// indirizzo deve essere pari
-                    if (device & 0x01) device++;   // indirizzo pari
-
+// su OPEN/CLOSE indirizzo deve essere base+1 (ex pari)
+                    if (baseOk)
+                        device++;      // porta a base+1
+                        
 #endif
                     fauxmo.setState(alexa_id, stato | 0xC0, value); // 0xc0: dopo aver inviato lo stato setta value a 128
                   }
@@ -3666,9 +3763,9 @@ void setup() {
 #ifdef KNX
                     command = 0x81;
                     
-// indirizzo deve essere pari
-                    if (device & 0x01) device++;   // indirizzo pari
-
+// su OPEN/CLOSE indirizzo deve essere base+1 
+                    if (baseOk)
+                        device++;      // porta a base+1
 #endif
                     fauxmo.setState(alexa_id, stato | 0xC0, value); // 0xc0: dopo aver inviato lo stato setta value a 128
                   }
@@ -3696,6 +3793,12 @@ void setup() {
                   break;
 
                 case 9:
+#ifdef KNX
+                  if ((domotic_options & 0x01) == (device & 0x01))
+                       baseOk = 1;
+                  else
+                       baseOk = 0;
+#endif
                   // --------------------------------------- COVERPCT alexa------------------------------------------------
                   fauxmo.setState(alexa_id, 1, value);  // coverpct - lo stato deve sempre essere ON
                   pct = value;
@@ -4114,6 +4217,7 @@ if (sm_picprog == PICPROG_FREE)
         requestBuffer[requestLen++] = 'U';
         requestBuffer[requestLen++] = '9';
         immediateSend();
+        delay(300);
         immediateReceive('k');
         delay(100);
       }  // cover == "false"
@@ -5241,16 +5345,17 @@ if (sm_picprog == PICPROG_FREE)
         DEVADDR deva;
         deva.linesector = replyBuffer[3];  // sector & line da telegramma
         deva.address = replyBuffer[4];      // id device da telegramma
-        char dispari = 0;
+
         action = replyBuffer[5];
-        if (deva.address & 0x01)
-        {
-          dispari = 1;           // dispari: id domoticz = id telegramma
-        }
+        
+        char baseOk = 0;
+        if ((domotic_options & 0x01) == (deva.address & 0x01))
+             baseOk = 1;  // comando diretto a indirizzo base
         else
         {
-          deva.address--;              // pari:    id domoticz = id telegramma - 1
-        }
+             baseOk = 0;  // comando diretto a indirizzo base+1
+             deva.address--;   // riporta address a indirizzo base
+        }        
             
         char devx = ixOfDevice(deva);
         devtype = device_BUS_id[devx].deviceType;
@@ -5296,7 +5401,7 @@ if (sm_picprog == PICPROG_FREE)
         // ----------------------------------------- STATO COVER --------------------------------------------
           if (devtype == 8)
           {
-            if (dispari)    // stop
+            if (baseOk)    // stop
             {
               if ((action == 0x80) || (action == 0x81))
               {
@@ -5305,7 +5410,7 @@ if (sm_picprog == PICPROG_FREE)
               topic = COVER_STATE;
               topic += nomeDevice;
             }
-            else   //    (pari)    // up down
+            else   //      // up down
             {
               if (action == 0x80)
               {
