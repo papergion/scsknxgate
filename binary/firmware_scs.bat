@@ -1,7 +1,7 @@
 h:
 echo off
 
-set ipaddress=192.168.2.34
+set ipaddress=192.168.2.112
 set versione=50617
 set folder=H:\Arduino\ESP8266\domotic\scsknxgate_v5\binary
 

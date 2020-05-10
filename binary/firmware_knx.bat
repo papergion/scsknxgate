@@ -1,8 +1,8 @@
 h:
 echo off
 
-set ipaddress=192.168.2.27
-set versione=50606
+set ipaddress=192.168.2.84
+set versione=50617
 set folder=H:\Arduino\ESP8266\domotic\scsknxgate_v5\binary
 echo ________________________KNX______________________________
 
