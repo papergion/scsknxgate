@@ -1,6 +1,6 @@
 //----------------------------------------------------------------------------------
 #define _FW_NAME     "SCSKNXGATE"
-#define _FW_VERSION  "VER_5.0617 "
+#define _FW_VERSION  "VER_5.0618 "
 #define _ESP_CORE    "esp8266-2.5.2"
 //----------------------------------------------------------------------------------
 //        ---- attenzione - porta http: 8080 <--se alexaParam=y--------------
@@ -9,6 +9,7 @@
 //        finchè non invia un comando che inizia con: '§'  
 
 //----------------------------------------------------------------------------------
+// 5.0618 knx - gestione scenari tramite GEN
 // 5.0617 knx - trattamento cover con indirizzo base pari - correzione scs B1
 // 5.0614 setup wifi da seriale con comando "S"
 // 5.0613 scs - trattamento cmd generali cover B1
@@ -34,8 +35,8 @@
 //----------------------------------------------------------------------------------
 //
 
-//#define KNX
-#define SCS
+#define KNX
+//#define SCS
 //#define DEBUG
 //#define MQTTLOG
 #define BLINKLED     // funziona solo su ESP01S //
@@ -426,6 +427,10 @@ char alexa_BUS_ix[DEV_NR];     // index:id alexa, contenuto: device index
 #define E_ALEXA_DESC_LEN     20 // device description max length - top 
 // 836 + 128*20 = 3396
 // ==============================================================================================================
+
+
+
+
 #ifdef DEBUGT
 static inline int32_t asm_ccount(void) {
 
@@ -662,32 +667,35 @@ void handleRequest()
 void setFirst(void)
 {
   uartSemaphor = 1;
-  requestBuffer[requestLen++] = '@';
-  requestBuffer[requestLen++] = 0x15; // evita memo in eeprom
-
-  requestBuffer[requestLen++] = '@';
-  requestBuffer[requestLen++] = 'M';
-  requestBuffer[requestLen++] = 'X';
 
 //  requestBuffer[requestLen++] = '@';
+//  requestBuffer[requestLen++] = 0x17; // new - riassume @MX @Y1 F2 @l - ok per knx
 
   requestBuffer[requestLen++] = '@';
-  requestBuffer[requestLen++] = 'Y';
-  requestBuffer[requestLen++] = '1';
+  requestBuffer[requestLen++] = 0x15; // evita memo in eeprom (in 0x17)
+
+  requestBuffer[requestLen++] = '@'; 
+  requestBuffer[requestLen++] = 'M'; // (in 0x17)
+  requestBuffer[requestLen++] = 'X'; // (in 0x17)
 
   requestBuffer[requestLen++] = '@';
-  requestBuffer[requestLen++] = 'F';
+  requestBuffer[requestLen++] = 'Y'; // (in 0x17)
+  requestBuffer[requestLen++] = '1'; // (in 0x17)
+
+  requestBuffer[requestLen++] = '@';
+  requestBuffer[requestLen++] = 'F'; // (in 0x17)
 #ifdef SCS
   requestBuffer[requestLen++] = '3';
 #endif
 #ifdef KNX
-  requestBuffer[requestLen++] = '2';
+  requestBuffer[requestLen++] = '2'; // (in 0x17)
+  
   requestBuffer[requestLen++] = '@';
   requestBuffer[requestLen++] = 'O';
   requestBuffer[requestLen++] = domotic_options;
 #endif
   requestBuffer[requestLen++] = '§';
-  requestBuffer[requestLen++] = 'l';
+  requestBuffer[requestLen++] = 'l'; // (in 0x17)
   uartSemaphor = 0;
 
   firstTime = 1;
@@ -1537,6 +1545,7 @@ void handleRoot()
   content = "<!DOCTYPE HTML>\r\n<html>Hello from ESP_" _MODO "GATE " _FW_VERSION " at ";
   content += WiFi.localIP().toString();
   content += "</html>";
+  
   server.send(200, "text/html", content);
   content = "";
 }
@@ -1913,16 +1922,17 @@ void MqttCallback(char* topic, byte* payload, unsigned int length)
     dev[1] = *(topic + sizeof(GENERIC_SET));
     
     requestBuffer[requestLen++] = '§';
-    requestBuffer[requestLen++] = 'y';		// 0x79 (@y: invia a pic da MQTT cmd standard da inviare sul bus)
 
 #ifdef SCS
 	char from;
 	char type;
 	
+    requestBuffer[requestLen++] = 'y';		// 0x79 (@y: invia a pic da MQTT cmd standard da inviare sul bus)
+
     dev[2] = 0;
     device = (char)strtoul(dev, &ch, 16);
 
-    packetBuffer[6] = 0;
+    packetBuffer[6] = 0;        // packet: ffttcc ->  <from> <type> <command>
     command = (char)strtoul(&packetBuffer[4], &ch, 16);
     packetBuffer[4] = 0;
     type = (char)strtoul(&packetBuffer[2], &ch, 16);
@@ -1937,22 +1947,39 @@ void MqttCallback(char* topic, byte* payload, unsigned int length)
 
 #ifdef KNX
 	word from;
-	
-    dev[2] = *(topic + sizeof(SWITCH_SET) + 1);
-    dev[3] = *(topic + sizeof(SWITCH_SET) + 2);
+	word wcommand;
+  
+    dev[2] = *(topic + sizeof(GENERIC_SET) + 1);
+    dev[3] = *(topic + sizeof(GENERIC_SET) + 2);
     dev[4] = 0;
     device = (word)strtoul(dev, &ch, 16);
-
-    packetBuffer[4] = 0;
-    command = (char)strtoul(&packetBuffer[2], &ch, 16);
+    
+		// packet: ffcccc ->  <from> <command>
+		
+    packetBuffer[6] = 0;
+    wcommand = (word)strtoul(&packetBuffer[2], &ch, 16);
 
     packetBuffer[2] = 0;
     from = (word)strtoul(&packetBuffer[0], &ch, 16);
-
-    requestBuffer[requestLen++] = lowByte(from);    // from device
-    requestBuffer[requestLen++] = highByte(device); // to   linesector
-    requestBuffer[requestLen++] = lowByte(device);  // to   device
-    requestBuffer[requestLen++] = command;          // command
+    
+    if (highByte(wcommand == 0))
+    {
+       requestBuffer[requestLen++] = 'y';		// 0x79 (@y: invia a pic da MQTT cmd standard da inviare sul bus)
+       requestBuffer[requestLen++] = lowByte(from);    // from device
+       requestBuffer[requestLen++] = highByte(device); // to   linesector
+       requestBuffer[requestLen++] = lowByte(device);  // to   device
+       requestBuffer[requestLen++] = (char)wcommand;          // command
+    }
+    else
+    {
+       requestBuffer[requestLen++] = 'j';		// 0x6A (@j: invia a pic da MQTT cmd standard da inviare sul bus)
+       requestBuffer[requestLen++] = lowByte(from);    // from device
+       requestBuffer[requestLen++] = highByte(device); // to   linesector
+       requestBuffer[requestLen++] = lowByte(device);  // to   device
+       requestBuffer[requestLen++] = 2;				   // data len
+       requestBuffer[requestLen++] = highByte(wcommand);// command
+       requestBuffer[requestLen++] = lowByte(wcommand); // command
+    }
 #endif
       
   }
@@ -5031,10 +5058,7 @@ if (sm_picprog == PICPROG_FREE)
   // --------SCS-----4abcd-(from-to-type-cmd)------- PUBBLICAZIONE STATO DEVICES -------------------------------------------------------
   // --------KNX-----4abcd-(from-to-cmd)------------ PUBBLICAZIONE STATO DEVICES -------------------------------------------------------
 
-  if ((mqttopen == 3) && (replyBuffer[1] == 'y') && 
-      ((replyBuffer[0] == 0xF5) || (replyBuffer[0] == 0xF6)))   
-//  if ((mqttopen == 3) && (replyLen == 6) && (replyBuffer[0] == 0xF5) && (replyBuffer[1] == 'y'))
-
+  if ((mqttopen == 3) && (replyBuffer[1] == 'y') && ((replyBuffer[0] == 0xF5) || (replyBuffer[0] == 0xF6)))   
   { // START pubblicazione stato device        [0xF5] [y] 32 00 12 01
     char devtype;
     char action;
@@ -5362,7 +5386,7 @@ if (sm_picprog == PICPROG_FREE)
         if ((devtype < 0x01) || (devtype > 0x0F))
           devtype = 0x01;
       
-        if ((devtype == 0x01) || (devtype == 11))     // luce non va considerato pari/dispari...
+        if ((devtype == 0x01) || (devtype == 11))     // luce e gen non vanno considerato pari/dispari...
         {
           deva.address = replyBuffer[4];      // ripristina indirizzo originale
         }
