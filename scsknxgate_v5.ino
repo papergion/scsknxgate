@@ -1,6 +1,6 @@
 //----------------------------------------------------------------------------------
 #define _FW_NAME     "SCSKNXGATE"
-#define _FW_VERSION  "VER_5.0618 "
+#define _FW_VERSION  "VER_5.0620 "
 #define _ESP_CORE    "esp8266-2.5.2"
 //----------------------------------------------------------------------------------
 //        ---- attenzione - porta http: 8080 <--se alexaParam=y--------------
@@ -9,6 +9,11 @@
 //        finchè non invia un comando che inizia con: '§'  
 
 //----------------------------------------------------------------------------------
+  
+//  adeguare pagina test a scs
+  
+// 5.0620 versione anche per scheda con esp8255 (opzione no-jumper)
+// 5.0619 test pagina html/js
 // 5.0618 knx - gestione scenari tramite GEN
 // 5.0617 knx - trattamento cover con indirizzo base pari - correzione scs B1
 // 5.0614 setup wifi da seriale con comando "S"
@@ -39,6 +44,9 @@
 //#define SCS
 //#define DEBUG
 //#define MQTTLOG
+
+#define NO_JUMPER
+
 #define BLINKLED     // funziona solo su ESP01S //
 #define UART_W_BUFFER
 
@@ -50,7 +58,6 @@
 #define USE_OTA
 
 #define BUFNR 2 // nr di buffer tx seriali
-
 /*
   scsknxgate - gateway between KNXgate/SCSgate and ethernet application   UDP / TCP / HTTP / MQTT
 
@@ -91,6 +98,7 @@
   chiamate http:
     server.on ( "/", handleScan );                  // elenco reti wifi <- solo in modalita AP
     server.on ( "/", handleRoot );                  // hello <- solo in modalità Wifi CLIENT
+    server.on ("/test", handleTest);                // pagina html/js di test
     server.on ("/status", handleStatus);            // status display
     server.on ("/picprog", handlePicProg);          // verify / start PIC firmware programming
     server.on ("/setting", handleSetting);          // setup wifi client
@@ -1144,8 +1152,12 @@ void handleMqttDevices()  // inizio processo di censimento automatico dei device
               content += "coverpct";
             else if (devtype == 11)
               content += "generic";
-            else if (devtype == 0x0E)
+            else if (devtype == 14) // 0x0E)
               content += "alarm board";
+            else if (devtype == 18)
+              content += "cover1";
+            else if (devtype == 19)
+              content += "coverpct1";
 
             content += "</li>";
           }
@@ -1192,13 +1204,19 @@ void handleMqttDevices()  // inizio processo di censimento automatico dei device
               content += "dimmer";
             else if (devtype == 8)
               content += "cover";
+            else if (devtype == 18)
+              content += "cover1";
             else if (devtype == 11)
               content += "generic";
-            else if (devtype == 0x0E)
+            else if (devtype == 14) // 0x0E)
               content += "alarm board";
             else if (devtype == 9)
-            {
               content += "coverpct";
+            else if (devtype == 19)
+              content += "coverpct1";
+            
+            if ((devtype == 9) || (devtype == 19))
+            {
               requestBuffer[requestLen++] = '§';
               requestBuffer[requestLen++] = 'U';
               requestBuffer[requestLen++] = '6';
@@ -1338,7 +1356,7 @@ void handleDeviceName()  // denominazione devices scoperti - per alexa
             EEPROM.commit();
         }
         AlexaDescr = "";
-        if (devtype == 9)
+        if ((devtype == 9) || (devtype == 19))
         {
           requestBuffer[requestLen++] = '§';
           requestBuffer[requestLen++] = 'U';
@@ -1353,7 +1371,7 @@ void handleDeviceName()  // denominazione devices scoperti - per alexa
           immediateSend();
           devtype = 0;
           immediateReceive('k');
-        } // devtype == 9
+        } // devtype == 9 || 19
       } // ((deviceX > 0) && (devAddress < DEV_NR))
     } // (server.hasArg("busid"))
   } // (busid != "")
@@ -1383,13 +1401,19 @@ void handleDeviceName()  // denominazione devices scoperti - per alexa
       TypeDescr = "4 dimmer";
     else if (devtype == 8)
       TypeDescr = "8 cover";
+    else if (devtype == 18)
+      TypeDescr = "18 cover1";
     else if (devtype == 11)
       TypeDescr = "11 generic";
-    else if (devtype == 0x0E)
+    else if (devtype == 14) // 0x0E)
       TypeDescr = "E alarm board";
     else if (devtype == 9)
-    {
       TypeDescr = "9 coverpct";
+    else if (devtype == 19)
+      TypeDescr = "19 coverpct1";
+    
+    if ((devtype == 9) || (devtype == 19))
+    {
       requestBuffer[requestLen++] = '§';
       requestBuffer[requestLen++] = 'U';
       requestBuffer[requestLen++] = '6';
@@ -1546,6 +1570,16 @@ void handleRoot()
   content += WiFi.localIP().toString();
   content += "</html>";
   
+  server.send(200, "text/html", content);
+  content = "";
+}
+// =============================================================================================
+void handleTest()
+{
+#ifdef KNX
+  newTest();
+#endif
+
   server.send(200, "text/html", content);
   content = "";
 }
@@ -2104,7 +2138,7 @@ void MqttCallback(char* topic, byte* payload, unsigned int length)
       WriteError(log);
     }
 
-    if (devtype == 9)	// <====================COVERPCT=========================
+    if ((devtype == 9) || (devtype == 19))	// <====================COVERPCT=========================
     {
       requestBuffer[requestLen++] = '§';
       requestBuffer[requestLen++] = 'u';
@@ -2535,6 +2569,7 @@ void createWebServer(int webtype)
       server.on ( "/", handleRoot );
       server.on ( "/scan", handleScan );                  // elenco reti wifi <- solo in modalita AP
     }
+  server.on ("/test", handleTest);                // pagina html/js di test
   server.on ("/setting", handleSetting);          // setup wifi client
   server.on ("/reset", handleReset);              // reset app
   server.on ("/status", handleStatus);            // status app
@@ -2696,7 +2731,7 @@ char  MQTTnewdiscover(char devtype, char * addrDevice, String nomeDevice)
   char rc = 0;
   String topic;
   String payload;
-  if (devtype == 0x01)  // D=define new device SWITCH <<<-----------------------------------------------
+  if (devtype == 1)  // D=define new device SWITCH <<<-----------------------------------------------
   {
     rc = 1;
     topic   = NEW_SWITCH_TOPIC;
@@ -2711,7 +2746,7 @@ char  MQTTnewdiscover(char devtype, char * addrDevice, String nomeDevice)
     payload += addrDevice;
     payload += NEW_DEVICE_END;
   }
-  else if ((devtype == 0x03) || (devtype == 0x04)) // D=define new device DIMMER <<<-----------------------------------------------
+  else if ((devtype == 3) || (devtype == 4)) // D=define new device DIMMER <<<-----------------------------------------------
   {
     rc = 1;
     topic   = NEW_LIGHT_TOPIC;
@@ -2730,7 +2765,7 @@ char  MQTTnewdiscover(char devtype, char * addrDevice, String nomeDevice)
     payload += addrDevice;
     payload += NEW_DEVICE_END;
   }
-  else if (devtype == 0x08) // D=define new device COVER <<<-----------------------------------------------
+  else if ((devtype == 8) || (devtype == 18)) // D=define new device COVER <<<-----------------------------------------------
   {
     rc = 1;
     topic   = NEW_COVER_TOPIC;
@@ -2762,7 +2797,7 @@ char  MQTTnewdiscover(char devtype, char * addrDevice, String nomeDevice)
     payload += addrDevice;
     payload += NEW_DEVICE_END;
   }
-  else if (devtype == 0x09) // D=define new device COVER PCT<<<-----------------------------------------------
+  else if ((devtype == 9) || (devtype == 19)) // D=define new device COVER PCT<<<-----------------------------------------------
   {
     rc = 1;
     topic   = NEW_COVERPCT_TOPIC;
@@ -2781,7 +2816,7 @@ char  MQTTnewdiscover(char devtype, char * addrDevice, String nomeDevice)
     payload += addrDevice;
     payload += NEW_DEVICE_END;
   }
-  else if (devtype == 0x0E) // D=define new device ALARM BOARD<<<-----------------------------------------------
+  else if (devtype == 14) // 0x0E) // D=define new device ALARM BOARD<<<-----------------------------------------------
   {
   }
   if (rc == 1)
@@ -3002,6 +3037,10 @@ void setup() {
 
   // aspetta 15 secondi perche' con l'assorbimento iniziale di corrente esp8266 fa disconnettere l'adattatore seriale
   int pauses = 0;
+#ifdef BLINKLED
+  pinMode(LED_BUILTIN, OUTPUT);
+  digitalWrite(LED_BUILTIN, HIGH); // spento
+#endif
   {
     while (pauses < 150) // 15 secondi wait
     {
@@ -3012,7 +3051,12 @@ void setup() {
   Serial.write('@');    // 
   Serial.write(0xF0);   // set led lamps low-freq (in progress mode)
   delay(10);            // wait 10ms
+#ifdef BLINKLED
+  digitalWrite(LED_BUILTIN, HIGH); // spento
+#endif
+
 //===============================jumper test========================================
+#ifndef NO_JUMPER
 //  jumperOpen = 0;
   pinMode(0, INPUT);
   pinMode(2, OUTPUT);
@@ -3020,8 +3064,7 @@ void setup() {
   delay(20);
   jumperOpen = digitalRead(0); //  == 1 jumper aperto
   digitalWrite(2, HIGH); // A0 OUTPUT ALTO
-  pinMode(LED_BUILTIN, OUTPUT);
-
+#endif
   
   EEPROM.begin(MAXEEPROM);
   
@@ -3125,7 +3168,11 @@ void setup() {
   }
   if (serIniOption == 'r')
   {
+#ifdef NO_JUMPER
+    forceAP = 2;
+#else
     forceAP = 0;
+#endif
     Serial.println("r: Display router mode");
   }
 
@@ -3146,7 +3193,11 @@ void setup() {
   else
   if (serIniOption == 'r')
   {
+#ifdef NO_JUMPER
+    forceAP = 2;
+#else
     forceAP = 0;
+#endif
     Serial.println("r: Display router mode");
   }
   else
@@ -3156,6 +3207,13 @@ void setup() {
     SerialSetup();
 //    serIniOption = 'r';    
   }
+  else
+  if (serIniOption == 'c')  // client mode - no display
+  {
+    forceAP = 2;
+  }
+
+
 
 /*  
   if (serIniOption == 'f')
@@ -3425,11 +3483,13 @@ void setup() {
 #endif
 
 #ifdef DEBUG
-//  if (( esid.length() > 1 ) && (forceAP == 0)) // dati in eeprom, jumper ignorato, for
   if (forceAP == 0) // dati in eeprom, jumper ignorato, for
 #else
-//  if (( esid.length() > 1 ) && (jumperOpen == 1) && (forceAP == 0)) // dati in eeprom, jumper assente, forzatura non digitata
+  #ifdef NO_JUMPER
+  if ((esid.length() > 1 ) && (forceAP == 2)) // dati in eeprom, jumper assente, forzatura non digitata
+  #else
   if ((jumperOpen == 1) && (forceAP == 0)) // dati in eeprom, jumper assente, forzatura non digitata
+  #endif
 #endif
 // =========================================================================================
 //        CONNESSIONE  AL  ROUTER 
@@ -3505,12 +3565,12 @@ void setup() {
         while ((devx < DEV_NR) && (device_BUS_id[devx].addressW))
         {
           devtype = device_BUS_id[devx].deviceType;
-          if ((devtype > 0) && (devtype < 11))
+          if ((devtype > 0) && (devtype != 11))
           {
             String edesc = descrOfIx(devx);
             if ((edesc != "") && (edesc[0] > ' '))
             {
-              if (devtype == 9)
+              if ((devtype == 9) || (devtype == 19))
                 id_fauxmo = fauxmo.addDevice(&edesc[0], 1);
               else
                 id_fauxmo = fauxmo.addDevice(&edesc[0], 128);
@@ -3747,6 +3807,7 @@ void setup() {
                   break;
 
                 case 8:
+                case 18:
 #ifdef KNX
                   if ((domotic_options & 0x01) == (device & 0x01))
                        baseOk = 1;
@@ -3820,6 +3881,7 @@ void setup() {
                   break;
 
                 case 9:
+                case 19:
 #ifdef KNX
                   if ((domotic_options & 0x01) == (device & 0x01))
                        baseOk = 1;
@@ -4205,7 +4267,7 @@ if (sm_picprog == PICPROG_FREE)
           devtype = (char) stype.toInt();
           device_BUS_id[deviceX].deviceType = devtype;
              
-          if (devtype == 9)
+          if ((devtype == 9) || (devtype == 19))
           {
             String smaxpos = tcpJarg(tcpBuffer,"\"maxp\"");
             char *ch;
@@ -4288,7 +4350,7 @@ if (sm_picprog == PICPROG_FREE)
           String alexadescr = descrOfIx(deviceX);
           alexadescr.toCharArray(AlexaDescr, 21);  
           maxp.Val = 0;
-          if (devtype == 9)
+          if ((devtype == 9) || (devtype == 19))
           {
             requestBuffer[requestLen++] = '§';
             requestBuffer[requestLen++] = 'U';
@@ -4359,7 +4421,7 @@ if (sm_picprog == PICPROG_FREE)
           String alexadescr = descrOfIx(deviceX);
           alexadescr.toCharArray(AlexaDescr, 21);  
           maxp.Val = 0;
-          if (devtype == 9)
+          if ((devtype == 9) || (devtype == 19))
           {
             requestBuffer[requestLen++] = '§';
             requestBuffer[requestLen++] = 'U';
@@ -4481,11 +4543,11 @@ if (sm_picprog == PICPROG_FREE)
 #ifdef USE_OTA
   if (ArduinoOTAflag == 1)
   {
-#ifdef BLINKLED
-    digitalWrite(LED_BUILTIN, HIGH); // spento
-#endif
     if (now - prevTime > 99)  // 100mS
     {
+#ifdef BLINKLED
+      digitalWrite(LED_BUILTIN, HIGH); // spento
+#endif
       prevTime = now;
       ArduinoOTA.handle();
    #ifdef BLINKLED
@@ -5229,7 +5291,7 @@ if (sm_picprog == PICPROG_FREE)
         }
         else
         // ----------------------------------------- STATO COVER --------------------------------------------
-        if (devtype == 8)
+        if ((devtype == 8) || (devtype == 18))
         {
           if (action == 0x08)
           {
@@ -5383,10 +5445,10 @@ if (sm_picprog == PICPROG_FREE)
             
         char devx = ixOfDevice(deva);
         devtype = device_BUS_id[devx].deviceType;
-        if ((devtype < 0x01) || (devtype > 0x0F))
-          devtype = 0x01;
+        if ((devtype < 1) || (devtype > 32))
+          devtype = 1;
       
-        if ((devtype == 0x01) || (devtype == 11))     // luce e gen non vanno considerato pari/dispari...
+        if ((devtype == 1) || (devtype == 11))     // luce e gen non vanno considerato pari/dispari...
         {
           deva.address = replyBuffer[4];      // ripristina indirizzo originale
         }
@@ -5423,7 +5485,7 @@ if (sm_picprog == PICPROG_FREE)
           }
           else
         // ----------------------------------------- STATO COVER --------------------------------------------
-          if (devtype == 8)
+          if ((devtype == 8) || (devtype == 18))
           {
             if (baseOk)    // stop
             {
@@ -6030,9 +6092,17 @@ char DeviceOfIx(char ixdevice)
 //--------------------------------------------------------------------
 char DeviceOfIx(char ixdevice, char * busname)
 {
-  char device = device_BUS_id[ixdevice].address;
+//  char device = device_BUS_id[ixdevice].address;
   sprintf(busname, "%02X%02X", device_BUS_id[ixdevice].linesector, device_BUS_id[ixdevice].address);  // to
   return device_BUS_id[ixdevice].address;
+}
+//--------------------------------------------------------------------
+char DeviceOfIxPlus(char ixdevice, char * busname)
+{
+  char device = device_BUS_id[ixdevice].address;
+  device++;
+  sprintf(busname, "%02X%02X", device_BUS_id[ixdevice].linesector, device);  // to
+  return device;
 }
 //--------------------------------------------------------------------
 String descrOfIx(char scsdevX)
@@ -6185,6 +6255,12 @@ char DeviceOfIx(char ixdevice)
 }
 //--------------------------------------------------------------------
 char DeviceOfIx(char ixdevice, char * busname)
+{
+  sprintf(busname, "%02X", device_BUS_id[ixdevice].address);
+  return device_BUS_id[ixdevice].address;
+}
+//--------------------------------------------------------------------
+char DeviceOfIxPlus(char ixdevice, char * busname)
 {
   sprintf(busname, "%02X", device_BUS_id[ixdevice].address);
   return device_BUS_id[ixdevice].address;
@@ -6383,3 +6459,157 @@ String SerialRead(int tout)
 }
 // =====================================================================================================
 // =====================================================================================================
+void newTest()
+{
+  char apice = 39;
+  char linea = 10;
+
+  content = R"=====(
+<!DOCTYPE html>
+<html>
+    <head>
+        <meta charset="utf-8">
+        <meta http-equiv="X-UA-Compatible" content="IE=edge">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <title>Home Controller</title>
+        <script src="https://ajax.googleapis.com/ajax/libs/jquery/3.5.1/jquery.min.js"></script> 
+        <link rel="stylesheet" href="https://stackpath.bootstrapcdn.com/bootstrap/4.4.1/css/bootstrap.min.css" integrity="sha384-Vkoo8x4CGsO3+Hhxv8T/Q5PaXtkKtu6ug5TOeNV6gBiFeWPGFN9MuhOf23Q9Ifjh" crossorigin="anonymous">
+    </head>
+    <body style="padding-left: 10px">
+        <h2 style="text-align: center; margin-top: 0px">LUCI</h2>
+        <br/>
+)=====";
+
+// ------------------------------ luci --------------------------------------------------------
+
+        char devtype;
+        char nomeDevice[6];
+        char devx = 1;
+        while ((devx < DEV_NR) && (device_BUS_id[devx].addressW))
+        {
+          devtype = device_BUS_id[devx].deviceType;
+          if ((devtype == 1) || (devtype == 4))
+          {
+            DeviceOfIx(devx, (char *)nomeDevice);
+            content += " <div class=\"row\">";
+            content += " <div class=\"col-6\">";
+            content += descrOfIx(devx);
+
+            content += "</div><div class=\"col-2\" style=\"color: green\" onclick=\"callAPI2(";
+            content += apice;
+            content += nomeDevice;
+            content += apice;
+#ifdef KNX
+            content += ",\'81\')\">ON</div>";
+#endif
+#ifdef SCS
+            content += ",\'00\')\">ON</div>";
+#endif
+
+            content += "<div class=\"col-2\" style=\"color: red\" onclick=\"callAPI2(";
+            content += apice;
+            content += nomeDevice;
+            content += apice;
+#ifdef KNX
+            content += ",\'80\')\">OFF</div></div>";
+#endif
+#ifdef SCS
+            content += ",\'01\')\">OFF</div></div>";
+#endif
+            content += R"=====(
+)=====";
+            
+          } // devtype == 1
+          devx++;
+        }  // while
+
+        content += R"=====(
+        <br/>
+        <h2 style="text-align: center; margin-top: 0px">TAPPARELLE</h2>
+        <br/>
+)=====";
+
+// ------------------------------ tapparelle --------------------------------------------------
+
+        char nomeDevicePlus[6];
+        devx = 1;
+        while ((devx < DEV_NR) && (device_BUS_id[devx].addressW))
+        {
+          devtype = device_BUS_id[devx].deviceType;
+          if ((devtype == 8) || (devtype == 9) || (devtype == 18) || (devtype == 19))
+          {
+            DeviceOfIx(devx, (char *)nomeDevice);
+            DeviceOfIxPlus(devx, (char *)nomeDevicePlus);
+            content += " <div class=\"row\">";
+            content += " <div class=\"col-5\">";
+            content += descrOfIx(devx);
+
+            content += "</div><div class=\"col-2\" style=\"color: green\" onclick=\"callAPI2(";
+            content += apice;
+            content += nomeDevicePlus;
+            content += apice;
+#ifdef KNX
+            content += ",\'80\')\">UP</div>";
+#endif
+#ifdef SCS
+            content += ",\'08\')\">UP</div>";
+#endif
+            content += "<div class=\"col-3\" style=\"color: red\" onclick=\"callAPI2(";
+            content += apice;
+            content += nomeDevicePlus;
+            content += apice;
+#ifdef KNX
+            content += ",\'81\')\">DOWN</div>";
+#endif
+#ifdef SCS
+            content += ",\'09\')\">DOWN</div>";
+#endif
+            content += "<div class=\"col-2\" style=\"color: blue\" onclick=\"callAPI2(";
+            content += apice;
+            content += nomeDevice;
+            content += apice;
+#ifdef KNX
+            content += ",\'81\')\">STOP</div></div>";
+#endif
+#ifdef SCS
+            content += ",\'0A\')\">STOP</div></div>";
+#endif
+            content += R"=====(
+)=====";
+            
+          } // devtype == 1
+          devx++;
+        }  // while
+
+
+
+  content += R"=====(
+        <br/>
+    </body>
+    <script>
+        function callAPI2(to, cmd) {
+            var request = new XMLHttpRequest()
+)=====";
+
+
+  content += "                request.open('GET', 'http:\/\/";
+  content += WiFi.localIP().toString();
+  if (alexaParam == 'y')
+      content += ":8080";
+  
+  content += "/gate?to=";
+  content += apice;
+  
+  content += " + to + '\&cmd=' + cmd + '\&resp=y', true)";  // non si riesce a mettere un apice dopo 0C
+
+  content += R"=====(
+            request.send()
+        }
+        function callAPI(to,cmd) {
+            callAPI2('0C' + to, cmd);
+        }
+    </script>
+</html>
+)=====";
+  
+}
