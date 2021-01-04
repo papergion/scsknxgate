@@ -1,7 +1,9 @@
 //----------------------------------------------------------------------------------
 #define _FW_NAME     "SCSKNXGATE"
-#define _FW_VERSION  "VER_5.0620 "
+#define _FW_VERSION  "VER_5.0632 "
 #define _ESP_CORE    "esp8266-2.5.2"
+
+//#define NO_JUMPER        // usare con ESP-M3  (esp8285) - cambiare anche setup IDE
 //----------------------------------------------------------------------------------
 //        ---- attenzione - porta http: 8080 <--se alexaParam=y--------------
 
@@ -9,9 +11,22 @@
 //        finchè non invia un comando che inizia con: '§'  
 
 //----------------------------------------------------------------------------------
-  
+// 
+// domotic_option 3
+// definire le cover con tipo 8 o 9 l'indirizzo base (DPTx_StopStepUpDown)) e con tipo 18 o 19 quello di move (DPTx_UpDown)
+// nella tabella posizioni vanno solamente gli indirizzi base (QUELLO PIU BASSO)
+// dopo aver cercato in tabella l'indirizzo, se trovato e di tipo 18/19 sottrae 1
+//
+//
+//
+//
+//
+//
+
 //  adeguare pagina test a scs
   
+// 5.0632 parametro per consentire udp con alexa - ALEXA con macaddress ridotto
+// 5.0630 versione evolutiva knx pari/dispari
 // 5.0620 versione anche per scheda con esp8255 (opzione no-jumper)
 // 5.0619 test pagina html/js
 // 5.0618 knx - gestione scenari tramite GEN
@@ -45,12 +60,11 @@
 //#define DEBUG
 //#define MQTTLOG
 
-#define NO_JUMPER
-
 #define BLINKLED     // funziona solo su ESP01S //
 #define UART_W_BUFFER
 
 #define NO_ALEXA_MQTT
+//#define NO_ALEXA_UDP
 #define USE_TCPSERVER
 #define TCP_PORT 5045
 // verificare DEBUG_FAUXMO_TCP in fauxmoesp.h
@@ -267,7 +281,7 @@ char mqtt_log = 0;
 char mqtt_retrylimit = 24; //x 10=240sec (4min) -limite oltre il quale si resetta per broker non disponibile
 char domoticMode;      // d=as domoticz      h=as homeassistant      maiuscolo=default switches
 
-char domotic_options;  // bit 0: 1= knx - indirizzi base dispari   0= base pari
+char domotic_options;  // 1= knx - indirizzi base dispari   0= base pari   3=multi-address
 
 char alexaParam = 0;
 int  countRestart = 0;
@@ -355,7 +369,7 @@ String content;
 
 char   httpCallback[128];
 int    statusCode;
-char   udpopen = 0;
+char   udpopen = 9;
 char   tcpopen = 0;
 char   tcpuart = 0;     // 0=ritorno seriale su UDP   1=ritorno seriale su TCP    2=debug messg su TCP
 String httpResp = "";   // resp= nessuna risposta      resp=i conferma immediata       resp=a risposta "get" con caratteri SCSGATE      resp=y  entrambe
@@ -1205,7 +1219,7 @@ void handleMqttDevices()  // inizio processo di censimento automatico dei device
             else if (devtype == 8)
               content += "cover";
             else if (devtype == 18)
-              content += "cover1";
+              content += "cover U";
             else if (devtype == 11)
               content += "generic";
             else if (devtype == 14) // 0x0E)
@@ -1213,7 +1227,7 @@ void handleMqttDevices()  // inizio processo di censimento automatico dei device
             else if (devtype == 9)
               content += "coverpct";
             else if (devtype == 19)
-              content += "coverpct1";
+              content += "coverpct U";
             
             if ((devtype == 9) || (devtype == 19))
             {
@@ -1885,8 +1899,13 @@ void MqttCallback(char* topic, byte* payload, unsigned int length)
 
 #ifdef KNX
         char baseOk = 0;
-        if ((domotic_options & 0x01) == (device & 0x01))
+        if (domotic_options == 0x03)
+          baseOk = 1;
+        else
+        {
+          if ((domotic_options & 0x01) == (device & 0x01))   // W6- COMANDO WEB ARRIVATO -> e' necessariamente un indirizzo base
              baseOk = 1;
+        }
 #endif
         if (payloads.substring(0, 4) == "STOP")
         {
@@ -2064,8 +2083,13 @@ void MqttCallback(char* topic, byte* payload, unsigned int length)
           device = (word)strtoul(dev, &ch, 16);
 
           char baseOk = 0;
-          if ((domotic_options & 0x01) == (device & 0x01))
+          if (domotic_options == 0x03)
+            baseOk = 1;
+          else
+          {
+            if ((domotic_options & 0x01) == (device & 0x01))   // W6- COMANDO WEB ARRIVATO -> e' necessariamente un indirizzo base
                baseOk = 1;
+          }
 
           if (payloads.substring(0, 4) == "STOP")
           {
@@ -3181,9 +3205,22 @@ void setup() {
   
 #else
 // -------------------------------------- NO DEBUG -------------------------------------------
-//  Serial.setTimeout(5000);
   Serial.setTimeout(1000);
-  Serial.readBytes(&serIniOption, 1);
+#ifdef NO_JUMPER
+  do {  
+     if (!Serial.available())
+     {
+       Serial.write('@'); 
+       Serial.write('Q');
+       Serial.write('R');
+       delay(50);            // wait 50ms
+     }
+     Serial.readBytes(&serIniOption, 1);
+  } while ((serIniOption != 'a') && (serIniOption != 'A') && (serIniOption != 'r') && (serIniOption != 'c') && (serIniOption != 'S'));
+#else  
+  Serial.readBytes(&serIniOption, 1); 
+#endif
+  
 //  if ((serIniOption > 64) && (serIniOption < 91)) serIniOption += 32;
   if ((serIniOption == 'a') || (serIniOption == 'A'))
   {
@@ -3565,12 +3602,12 @@ void setup() {
         while ((devx < DEV_NR) && (device_BUS_id[devx].addressW))
         {
           devtype = device_BUS_id[devx].deviceType;
-          if ((devtype > 0) && (devtype != 11))
+          if ((devtype > 0) && (devtype != 11) && (devtype < 18))  // W6 - in alexa censire solo indirizzi base
           {
             String edesc = descrOfIx(devx);
             if ((edesc != "") && (edesc[0] > ' '))
             {
-              if ((devtype == 9) || (devtype == 19))
+              if (devtype == 9)
                 id_fauxmo = fauxmo.addDevice(&edesc[0], 1);
               else
                 id_fauxmo = fauxmo.addDevice(&edesc[0], 128);
@@ -3807,9 +3844,12 @@ void setup() {
                   break;
 
                 case 8:
-                case 18:
+//              case 18:
 #ifdef KNX
-                  if ((domotic_options & 0x01) == (device & 0x01))
+                  if (domotic_options == 0x03)
+                       baseOk = 1;
+                  else
+                  if ((domotic_options & 0x01) == (device & 0x01))   // W6- COMANDO DA ALEXA ! -> e' necessariamente un indirizzo base
                        baseOk = 1;
                   else
                        baseOk = 0;
@@ -3881,9 +3921,13 @@ void setup() {
                   break;
 
                 case 9:
-                case 19:
+//              case 19:
 #ifdef KNX
-                  if ((domotic_options & 0x01) == (device & 0x01))
+                  char baseOk = 0;
+                  if (domotic_options == 0x03)
+                       baseOk = 1;
+                  else
+                  if ((domotic_options & 0x01) == (device & 0x01)) // W6- COMANDO DA ALEXA ! -> e' necessariamente un indirizzo base
                        baseOk = 1;
                   else
                        baseOk = 0;
@@ -3931,11 +3975,15 @@ void setup() {
             } // end uartsemaphor
           } // end else   an scs device
         });
-
-
-
+#ifdef NO_ALEXA_UDP
+		udpopen = 0;
+#else
+		udpopen = 9;  // udp request
+#endif
       }  // end if alexa
-      else
+      
+      
+      if (udpopen == 9)
       {
 #ifdef DEBUG
         Serial.println("open UDP port");
@@ -4238,7 +4286,7 @@ if (sm_picprog == PICPROG_FREE)
     }	// #request
     else
 // ------------------------------------------------------------------------------------------------------
-    if (memcmp(tcpBuffer, "#putdevice",10) == 0)
+    if (memcmp(tcpBuffer, "#putdevice",10) == 0)   // upload device
 // ------------------------------------------------------------------------------------------------------
     {
       String busid = tcpJarg(tcpBuffer,"\"device\"");
@@ -4256,18 +4304,25 @@ if (sm_picprog == PICPROG_FREE)
           String alexadescr = tcpJarg(tcpBuffer,"\"descr\"");
           alexadescr.toCharArray(AlexaDescr, 21);  
 
-          if (alexaParam == 'y' )
-          {
-            String edesc = descrOfIx(deviceX);
-            fauxmo.renameDevice(&edesc[0], &alexadescr[0]);
-          }
           WriteDescrOfIx(AlexaDescr, deviceX);
         
           String stype = tcpJarg(tcpBuffer,"\"type\"");
           devtype = (char) stype.toInt();
+/*
+//          if ((devtype == 8) && (domotic_options == 0x03))
+//             devtype = 18;          
+//          if ((devtype == 9) && (domotic_options == 0x03))
+//             devtype = 19;          
+*/
           device_BUS_id[deviceX].deviceType = devtype;
              
-          if ((devtype == 9) || (devtype == 19))
+          if ((alexaParam == 'y' ) && (devtype < 18))		// w6 - alexa non ha bisogno dei types 18 19
+          {
+            String edesc = descrOfIx(deviceX);
+            fauxmo.renameDevice(&edesc[0], &alexadescr[0]);
+          }
+          
+          if ((devtype == 9) || (devtype == 19))			// w6 - aggiorna tapparelle pct su pic
           {
             String smaxpos = tcpJarg(tcpBuffer,"\"maxp\"");
             char *ch;
@@ -4286,6 +4341,24 @@ if (sm_picprog == PICPROG_FREE)
             immediateReceive('k');
             delay(100);
           }
+          
+#ifdef KNX
+          if ((devtype == 8) || (devtype == 18))			// w6 - aggiorna tapparelle pct su pic
+          {
+            requestBuffer[requestLen++] = '§';
+            requestBuffer[requestLen++] = 'U';
+            requestBuffer[requestLen++] = '8';
+            requestBuffer[requestLen++] = linesector;
+            requestBuffer[requestLen++] = device;     // device id
+            requestBuffer[requestLen++] = devtype;    // device type
+            requestBuffer[requestLen++] = 0;          // max position H
+            requestBuffer[requestLen++] = 0;          // max position L
+            immediateSend();
+            immediateReceive('k');
+            delay(100);
+          }
+#endif
+          
           else
             maxp.Val = 0;
             
@@ -4334,7 +4407,7 @@ if (sm_picprog == PICPROG_FREE)
     }	// #putdevice
     else
 // ------------------------------------------------------------------------------------------------------
-    if (memcmp(tcpBuffer, "#getdevall",10) == 0)
+    if (memcmp(tcpBuffer, "#getdevall",10) == 0) // download devices
 // ------------------------------------------------------------------------------------------------------
     {
       deviceX = 1;
@@ -4385,7 +4458,7 @@ if (sm_picprog == PICPROG_FREE)
     } // received "#getdevices"
     else
 // ------------------------------------------------------------------------------------------------------
-    if (memcmp(tcpBuffer, "#getdevice",10) == 0)
+    if (memcmp(tcpBuffer, "#getdevice",10) == 0)  // download devices
 // ------------------------------------------------------------------------------------------------------
     {
       deviceX = 1;
@@ -4543,6 +4616,12 @@ if (sm_picprog == PICPROG_FREE)
 #ifdef USE_OTA
   if (ArduinoOTAflag == 1)
   {
+    if (now - prevTime > 29)  // 30mS
+    {
+#ifdef BLINKLED
+      digitalWrite(LED_BUILTIN, HIGH); // spento
+#endif
+    }
     if (now - prevTime > 99)  // 100mS
     {
 #ifdef BLINKLED
@@ -5435,19 +5514,36 @@ if (sm_picprog == PICPROG_FREE)
         action = replyBuffer[5];
         
         char baseOk = 0;
-        if ((domotic_options & 0x01) == (deva.address & 0x01))
-             baseOk = 1;  // comando diretto a indirizzo base
-        else
+        char devx;
+        if (domotic_options == 0x03)
         {
+          devx = ixOfDevice(deva);                         // W6 - log comando sul bus - deve pubblicarlo su MQTT
+          devtype = device_BUS_id[devx].deviceType;
+          if (devtype < 18)
+             baseOk = 1;  // comando diretto a indirizzo base
+          else
+          {
              baseOk = 0;  // comando diretto a indirizzo base+1
              deva.address--;   // riporta address a indirizzo base
-        }        
-            
-        char devx = ixOfDevice(deva);
-        devtype = device_BUS_id[devx].deviceType;
-        if ((devtype < 1) || (devtype > 32))
-          devtype = 1;
-      
+             devx = ixOfDevice(deva);
+             devtype = device_BUS_id[devx].deviceType;
+          }           
+        }
+        else
+        {
+          if ((domotic_options & 0x01) == (deva.address & 0x01))   // W6 - log comando sul bus - deve pubblicarlo su MQTT
+             baseOk = 1;  // comando diretto a indirizzo base
+          else
+          {
+             baseOk = 0;  // comando diretto a indirizzo base+1
+             deva.address--;   // riporta address a indirizzo base
+          }  
+          devx = ixOfDevice(deva);
+          devtype = device_BUS_id[devx].deviceType;
+          if ((devtype < 1) || (devtype > 32))
+            devtype = 1;
+        }
+        
         if ((devtype == 1) || (devtype == 11))     // luce e gen non vanno considerato pari/dispari...
         {
           deva.address = replyBuffer[4];      // ripristina indirizzo originale

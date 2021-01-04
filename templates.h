@@ -30,8 +30,9 @@ THE SOFTWARE.
 
 // ---------------------------------------------------------------------------------------------------
 #define SHORT_DECLARE
-//#define UNIQUE MACADDRESS
-#define UNIQUE_MY "scs#"
+//#define UNIQUE_MACADDRESS
+#define SHORT_MACADDRESS
+//#define UNIQUE_MY "scs#"
 // ---------------------------------------------------------------------------------------------------
 
 PROGMEM const char FAUXMO_TCP_HEADERS[] =
@@ -60,9 +61,13 @@ PROGMEM const char FAUXMO_TCP_VALUE_RESPONSE[] = "["
 PROGMEM const char FAUXMO_DEVICE_JSON_TEMPLATE_FIRST[] = "{"
     "\"name\":\"%s\","    // max name length 20 bytes
     "\"uniqueid\":\""
-#ifdef UNIQUE MACADDRESS
+#ifdef UNIQUE_MACADDRESS
     "%s"
-#else
+#endif
+#ifdef SHORT_MACADDRESS
+    "%s"
+#endif
+#ifdef UNIQUE_MY
     UNIQUE_MY
 #endif
     "-%d\","
@@ -74,9 +79,13 @@ PROGMEM const char FAUXMO_DEVICE_JSON_TEMPLATE[] = "{"
     "\"type\":\"Extended Color Light\","
     "\"name\":\"%s\","
     "\"uniqueid\":\""
-#ifdef UNIQUE MACADDRESS
+#ifdef UNIQUE_MACADDRESS
     "%s"
-#else
+#endif
+#ifdef SHORT_MACADDRESS
+    "%s"
+#endif
+#ifdef UNIQUE_MY
     UNIQUE_MY
 #endif
     "-%d\","

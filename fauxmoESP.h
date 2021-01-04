@@ -31,7 +31,7 @@ THE SOFTWARE.
 #define FAUXMO_UDP_MULTICAST_IP     IPAddress(239,255,255,250)
 #define FAUXMO_UDP_MULTICAST_PORT   1900
 #define FAUXMO_TCP_MAX_CLIENTS      10
-#define FAUXMO_TCP_PORT             1901
+#define FAUXMO_TCP_PORT             80
 #define FAUXMO_RX_TIMEOUT           3
 
 

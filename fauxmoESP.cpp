@@ -120,15 +120,22 @@ String fauxmoESP::_deviceJson_first(unsigned char id) {
   String mac = WiFi.macAddress();
   mac.replace(":", "");
   mac.toLowerCase();
+#ifdef SHORT_MACADDRESS
+  String mac1 = mac.substring(9);
+#endif
 
   fauxmoesp_device_t device = _devices[id];
   char buffer[strlen_P(FAUXMO_DEVICE_JSON_TEMPLATE_FIRST) + 64];
   snprintf_P(
     buffer, sizeof(buffer),
     FAUXMO_DEVICE_JSON_TEMPLATE_FIRST,
-#ifdef UNIQUE MACADDRESS
+#ifdef UNIQUE_MACADDRESS
     device.name, mac.c_str(), id + 1
-#else
+#endif
+#ifdef SHORT_MACADDRESS
+    device.name, mac1.c_str(), id + 1
+#endif
+#ifdef UNIQUE_MY
     device.name, id + 1
 #endif
   );
@@ -142,10 +149,17 @@ String fauxmoESP::_deviceJson(unsigned char id) {
 
   if (id >= _devices.size()) return "{}";
 
-#ifdef UNIQUE MACADDRESS
+#ifdef UNIQUE_MACADDRESS
   String mac = WiFi.macAddress();
   mac.replace(":", "");
   mac.toLowerCase();
+#endif
+
+#ifdef SHORT_MACADDRESS
+  String mac = WiFi.macAddress();
+  mac.replace(":", "");
+  mac.toLowerCase();
+  String mac1 = mac.substring(9);
 #endif
 
   fauxmoesp_device_t device = _devices[id];
@@ -153,9 +167,13 @@ String fauxmoESP::_deviceJson(unsigned char id) {
   snprintf_P(
     buffer, sizeof(buffer),
     FAUXMO_DEVICE_JSON_TEMPLATE,
-#ifdef UNIQUE MACADDRESS
+#ifdef UNIQUE_MACADDRESS
     device.name, mac.c_str(), id + 1,
-#else
+#endif
+#ifdef SHORT_MACADDRESS
+    device.name, mac1.c_str(), id + 1,
+#endif
+#ifdef UNIQUE_MY
     device.name, id + 1,
 #endif
     (device.state & 0x01) ? "true" : "false",
@@ -217,7 +235,7 @@ bool fauxmoESP::_onTCPList(AsyncClient *client, String url, String body) {
     {
       response += "{";
       while ((response.length() < 928) && (iDevice < _devices.size()))
-//    while ((response.length() < 2700) && (iDevice < _devices.size()))
+//    while ((response.length() < 1500-(strlen_P(FAUXMO_DEVICE_JSON_TEMPLATE) + 64))  && (iDevice < _devices.size()));
       {
         if (first++ > 0) response += ",";
 #ifdef SHORT_DECLARE
