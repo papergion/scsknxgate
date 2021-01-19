@@ -1,6 +1,6 @@
 //----------------------------------------------------------------------------------
 #define _FW_NAME     "SCSKNXGATE"
-#define _FW_VERSION  "VER_5.0632 "
+#define _FW_VERSION  "VER_5.0633 "
 #define _ESP_CORE    "esp8266-2.5.2"
 
 //#define NO_JUMPER        // usare con ESP-M3  (esp8285) - cambiare anche setup IDE
@@ -25,6 +25,7 @@
 
 //  adeguare pagina test a scs
   
+// 5.0633 scs - riconoscimento temperature termostati (tipo 15)
 // 5.0632 parametro per consentire udp con alexa - ALEXA con macaddress ridotto
 // 5.0630 versione evolutiva knx pari/dispari
 // 5.0620 versione anche per scheda con esp8255 (opzione no-jumper)
@@ -55,8 +56,8 @@
 //----------------------------------------------------------------------------------
 //
 
-#define KNX
-//#define SCS
+//#define KNX
+#define SCS
 //#define DEBUG
 //#define MQTTLOG
 
@@ -5217,6 +5218,30 @@ if (sm_picprog == PICPROG_FREE)
 
     char devx = 0;
     char device;
+    if ((replyBuffer[4] == 0x30) && (replyBuffer[2] == 0xB4))  // <-termostato----------------------------
+    {
+        device = replyBuffer[3];  
+        devtype = 15;
+
+        const char* cPayload;
+        const char* cTopic;
+        char nomeDevice[5];
+        sprintf(nomeDevice, "%02X", device);  // to
+        topic = SENSOR_TEMP_STATE;
+        topic += nomeDevice;
+
+        char actionc[5];
+        sprintf(actionc, "%03u", replyBuffer[4]);
+        actionc[4]=0;
+        actionc[3]= actionc[2];
+        actionc[2]=',';
+        payload = String(actionc);
+        
+        cPayload = payload.c_str();
+        cTopic = topic.c_str();
+        client.publish(cTopic, cPayload, mqtt_persistence);
+    }
+    else
     if (replyBuffer[4] == 0x12)  // <-comando----------------------------
     {
       action = replyBuffer[5];
@@ -5427,7 +5452,7 @@ if (sm_picprog == PICPROG_FREE)
       }       // evitare doppioni & device valido
     } // <-replyBuffer[4] == 0x12---------------------comando----------------------------
   // ----------------------------------------------------------------------------------------------------
-      else
+    else
       
       
       
