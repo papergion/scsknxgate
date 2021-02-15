@@ -1,9 +1,13 @@
 //----------------------------------------------------------------------------------
 #define _FW_NAME     "SCSKNXGATE"
-#define _FW_VERSION  "VER_5.0633 "
+#define _FW_VERSION  "VER_5.0635 "
 #define _ESP_CORE    "esp8266-2.5.2"
 
-//#define NO_JUMPER        // usare con ESP-M3  (esp8285) - cambiare anche setup IDE
+#define NO_JUMPER        // usare con ESP-M3  (esp8285) - cambiare anche setup IDE
+//#define KNX
+#define SCS
+//#define DEBUG
+
 //----------------------------------------------------------------------------------
 //        ---- attenzione - porta http: 8080 <--se alexaParam=y--------------
 
@@ -25,6 +29,7 @@
 
 //  adeguare pagina test a scs
   
+// 5.0634 aggiunta callback con ip fisso, usando resp=W
 // 5.0633 scs - riconoscimento temperature termostati (tipo 15)
 // 5.0632 parametro per consentire udp con alexa - ALEXA con macaddress ridotto
 // 5.0630 versione evolutiva knx pari/dispari
@@ -56,9 +61,6 @@
 //----------------------------------------------------------------------------------
 //
 
-//#define KNX
-#define SCS
-//#define DEBUG
 //#define MQTTLOG
 
 #define BLINKLED     // funziona solo su ESP01S //
@@ -3242,7 +3244,7 @@ void setup() {
   if (serIniOption == 'S')
   {
     forceAP = 0;
-    SerialSetup();
+//  SerialSetup();
 //    serIniOption = 'r';    
   }
   else
@@ -5002,6 +5004,57 @@ if (sm_picprog == PICPROG_FREE)
 
 
 
+  // --------------------- RISPOSTA HTTP di prova -------------------------------------------
+
+
+  if ((httpResp == "W") && (httpCallback[0] != 0))
+  {
+    if ((replyBuffer[0] == 0xF5) && (replyBuffer[1] == 'y') && (replyLen == 6))   // solo se stringa=   [0xF5] [y] 32 00 12 01
+    {
+      content = "http://";
+//      content += tcp_remote_ip.toString();
+      content += httpCallback;
+      char hBuffer[12];
+
+#ifdef SCS
+      // intero  [7] A8 32 00 12 01 21 A3
+      // ridotto [0xF5] [y] 32 00 12 01
+      // ----------------1---2--3--4--5--
+      sprintf(hBuffer, "&type=%02X", replyBuffer[4]);
+      content += hBuffer;
+      sprintf(hBuffer, "&from=%02X", replyBuffer[3]);
+      content += hBuffer;
+      sprintf(hBuffer, "&to=%02X", replyBuffer[2]);
+      content += hBuffer;
+      sprintf(hBuffer, "&cmd=%02X", replyBuffer[5]);
+      content += hBuffer;
+#endif
+
+#ifdef KNX
+      // intero  [9] B4 10 29 0B 65 E1 00 81 7C
+      // ridotto  [0xF5] [y] 29 0B 65 81
+      // -----------------1---2--3--4--5--
+      sprintf(hBuffer, "&from=%02X", replyBuffer[2]);
+      content += hBuffer;
+      sprintf(hBuffer, "&to=%02X%02X", replyBuffer[3], replyBuffer[4]);
+      content += hBuffer;
+      sprintf(hBuffer, "&cmd=%02X", replyBuffer[5]);
+      content += hBuffer;
+#endif
+
+      httpClient.begin(content);
+      int httpCode = httpClient.GET();                                  //Send the request
+      httpClient.end();   //Close connection
+      content = "";
+    }
+  } // httpResp == "W"
+  // --------------------- FINE RISPOSTA HTTP -------------------------------------------
+
+
+
+
+
+
   // =========================================== M Q T T  PUBLISH=================================================
 
 #ifdef SCS
@@ -5215,6 +5268,7 @@ if (sm_picprog == PICPROG_FREE)
 
     // SCS intero   [7] A8 32 00 12 01 21 A3
     // SCS ridotto [0xF5] [y] 32 00 12 01
+    //  termostato [0xF5] [y] B4 01 30 F4
 
     char devx = 0;
     char device;
@@ -5231,7 +5285,7 @@ if (sm_picprog == PICPROG_FREE)
         topic += nomeDevice;
 
         char actionc[5];
-        sprintf(actionc, "%03u", replyBuffer[4]);
+        sprintf(actionc, "%03u", replyBuffer[5]); 
         actionc[4]=0;
         actionc[3]= actionc[2];
         actionc[2]=',';
