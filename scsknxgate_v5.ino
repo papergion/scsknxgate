@@ -1,11 +1,11 @@
 //----------------------------------------------------------------------------------
 #define _FW_NAME     "SCSKNXGATE"
-#define _FW_VERSION  "VER_5.0635 "
+#define _FW_VERSION  "VER_5.0639 "
 #define _ESP_CORE    "esp8266-2.5.2"
 
 #define NO_JUMPER        // usare con ESP-M3  (esp8285) - cambiare anche setup IDE
-//#define KNX
-#define SCS
+#define KNX
+//#define SCS
 //#define DEBUG
 
 //----------------------------------------------------------------------------------
@@ -25,10 +25,21 @@
 //
 //
 //
-//
+// devices type:
+// 0x01:1-switch
+// 0x03:3-dimmer scs
+// 0x04:4-dimmer on/off	        0x15:21-dimmer up/dw		   
+// 0x08:8-tapparella stop       0x09:9-tapparella pct stop   
+// 0x12:18-tapparella up/dwn    0x13:19-tapparella pct up/dwn
+// 0x0B:11-generic              0x0C:12-generic 
+// 0x0E:14-:allarme             0x0F:15-termostato
+// 0x30-0x37:rele i2c
+// 0x40-0x47:pulsanti i2c
+
 
 //  adeguare pagina test a scs
   
+// 5.0637 correzione dimmer knx x opzione 3
 // 5.0634 aggiunta callback con ip fisso, usando resp=W
 // 5.0633 scs - riconoscimento temperature termostati (tipo 15)
 // 5.0632 parametro per consentire udp con alexa - ALEXA con macaddress ridotto
@@ -1158,11 +1169,14 @@ void handleMqttDevices()  // inizio processo di censimento automatico dei device
               content += "switch";
 #ifdef SCS
             else if (devtype == 3)
+              content += "dimmer";
 #endif
 #ifdef KNX
             else if (devtype == 4)
+              content += "dimmer on/off";
+            else if (devtype == 24)
+              content += "dimmer up/dwn";
 #endif
-              content += "dimmer";
             else if (devtype == 8)
               content += "cover";
             else if (devtype == 9)
@@ -1172,9 +1186,9 @@ void handleMqttDevices()  // inizio processo di censimento automatico dei device
             else if (devtype == 14) // 0x0E)
               content += "alarm board";
             else if (devtype == 18)
-              content += "cover1";
+              content += "cover up/dwn";
             else if (devtype == 19)
-              content += "coverpct1";
+              content += "coverpct up/dwn";
 
             content += "</li>";
           }
@@ -1214,15 +1228,18 @@ void handleMqttDevices()  // inizio processo di censimento automatico dei device
               content += "switch";
 #ifdef SCS
             else if (devtype == 3)
+              content += "dimmer";
 #endif
 #ifdef KNX
             else if (devtype == 4)
+              content += "dimmer on/off";
+            else if (devtype == 24)
+              content += "dimmer up/dwn";
 #endif
-              content += "dimmer";
             else if (devtype == 8)
               content += "cover";
             else if (devtype == 18)
-              content += "cover U";
+              content += "cover up/dwn";
             else if (devtype == 11)
               content += "generic";
             else if (devtype == 14) // 0x0E)
@@ -1230,13 +1247,13 @@ void handleMqttDevices()  // inizio processo di censimento automatico dei device
             else if (devtype == 9)
               content += "coverpct";
             else if (devtype == 19)
-              content += "coverpct U";
+              content += "coverpct up/dwn";
             
-            if ((devtype == 9) || (devtype == 19))
+            if ((devtype == 9) || (devtype == 19))  // tapparelle pct
             {
               requestBuffer[requestLen++] = '§';
               requestBuffer[requestLen++] = 'U';
-              requestBuffer[requestLen++] = '6';
+              requestBuffer[requestLen++] = '6';    // richiede a pic la posizione massima
 #ifdef KNX
               requestBuffer[requestLen++] = device_BUS_id[devx].linesector;
 #endif
@@ -1373,11 +1390,12 @@ void handleDeviceName()  // denominazione devices scoperti - per alexa
             EEPROM.commit();
         }
         AlexaDescr = "";
-        if ((devtype == 9) || (devtype == 19))
+        if ((devtype == 4) || (devtype == 24))  maxp.Val = 100;
+        if ((devtype == 9) || (devtype == 19) || (devtype == 4) || (devtype == 24))  // tapparella pct o dimmer
         {
           requestBuffer[requestLen++] = '§';
           requestBuffer[requestLen++] = 'U';
-          requestBuffer[requestLen++] = '8';
+          requestBuffer[requestLen++] = '8';   // aggiorna su pic la posizione massima
 #ifdef KNX
           requestBuffer[requestLen++] = device_BUS_id[deviceX].linesector;     // device id
 #endif
@@ -1388,7 +1406,7 @@ void handleDeviceName()  // denominazione devices scoperti - per alexa
           immediateSend();
           devtype = 0;
           immediateReceive('k');
-        } // devtype == 9 || 19
+        } // devtype == 9 || 19 || 4 || 24
       } // ((deviceX > 0) && (devAddress < DEV_NR))
     } // (server.hasArg("busid"))
   } // (busid != "")
@@ -1416,10 +1434,12 @@ void handleDeviceName()  // denominazione devices scoperti - per alexa
       TypeDescr = "3 dimmer";
     else if (devtype == 4)
       TypeDescr = "4 dimmer";
+    else if (devtype == 24)
+      TypeDescr = "24 dimmer up/dwn";
     else if (devtype == 8)
       TypeDescr = "8 cover";
     else if (devtype == 18)
-      TypeDescr = "18 cover1";
+      TypeDescr = "18 cover up/dwn";
     else if (devtype == 11)
       TypeDescr = "11 generic";
     else if (devtype == 14) // 0x0E)
@@ -1427,9 +1447,9 @@ void handleDeviceName()  // denominazione devices scoperti - per alexa
     else if (devtype == 9)
       TypeDescr = "9 coverpct";
     else if (devtype == 19)
-      TypeDescr = "19 coverpct1";
+      TypeDescr = "19 coverpct up/dwn";
     
-    if ((devtype == 9) || (devtype == 19))
+    if ((devtype == 9) || (devtype == 19))  // chiede a pic la posizione massima
     {
       requestBuffer[requestLen++] = '§';
       requestBuffer[requestLen++] = 'U';
@@ -1700,7 +1720,7 @@ char reconnect()
 // ===============================================================================================
 void MqttCallback(char* topic, byte* payload, unsigned int length)
 // =============================================================================================================
-// ================================ messaggio MQTT in arrivo (comando web) =====================================
+// ================================ messaggio MQTT in arrivo (comando web HA) ==================================
 // =============================================================================================================
 {
   int i = 0;
@@ -1778,6 +1798,8 @@ void MqttCallback(char* topic, byte* payload, unsigned int length)
 
 
 
+    // --------------------------------------- LIGHTS DIMM ------------------------------------------
+
 #ifdef KNX //  dimmer KNX
 
   if (topicString.substring(0, sizeof(BRIGHT_SET) - 1) == BRIGHT_SET)
@@ -1794,12 +1816,12 @@ void MqttCallback(char* topic, byte* payload, unsigned int length)
     device = (word)strtoul(dev, &ch, 16);
     devtype = 4; // light
 
-    if (payloads.substring(0, 2) == "ON")
-      command = 0x80;
-    else
-    if (payloads.substring(0, 3) == "OFF")
-      command = 0x81;
-    else
+//    if (payloads.substring(0, 2) == "ON")
+//      command = 0x80;
+//    else
+//    if (payloads.substring(0, 3) == "OFF")
+//      command = 0x81;
+//    else
     {
       int pct = atoi(packetBuffer);    // percentuale
       command = (unsigned char) pct;
@@ -1818,7 +1840,6 @@ void MqttCallback(char* topic, byte* payload, unsigned int length)
 
 
 #ifdef SCS 
-    // --------------------------------------- LIGHTS DIMM ------------------------------------------
     if (topicString.substring(0, sizeof(BRIGHT_SET) - 1) == BRIGHT_SET)
     {
 #ifdef DEBUG
@@ -4319,7 +4340,7 @@ if (sm_picprog == PICPROG_FREE)
 */
           device_BUS_id[deviceX].deviceType = devtype;
              
-          if ((alexaParam == 'y' ) && (devtype < 18))		// w6 - alexa non ha bisogno dei types 18 19
+          if ((alexaParam == 'y' ) && (devtype < 18))		// w6 - alexa non ha bisogno dei types 18 19 5
           {
             String edesc = descrOfIx(deviceX);
             fauxmo.renameDevice(&edesc[0], &alexadescr[0]);
@@ -4346,7 +4367,7 @@ if (sm_picprog == PICPROG_FREE)
           }
           
 #ifdef KNX
-          if ((devtype == 8) || (devtype == 18))			// w6 - aggiorna tapparelle pct su pic
+          if ((devtype == 8) || (devtype == 18))      // U8 - aggiorna tapparelle pct su pic
           {
             requestBuffer[requestLen++] = '§';
             requestBuffer[requestLen++] = 'U';
@@ -4354,8 +4375,23 @@ if (sm_picprog == PICPROG_FREE)
             requestBuffer[requestLen++] = linesector;
             requestBuffer[requestLen++] = device;     // device id
             requestBuffer[requestLen++] = devtype;    // device type
-            requestBuffer[requestLen++] = 0;          // max position H
-            requestBuffer[requestLen++] = 0;          // max position L
+            requestBuffer[requestLen++] = 0;   // max position H
+            requestBuffer[requestLen++] = 0;   // max position L
+            immediateSend();
+            immediateReceive('k');
+            delay(100);
+          }
+          else
+          if ((devtype == 4) || (devtype == 24))      // U8 - aggiorna dimmer su pic
+          {
+            requestBuffer[requestLen++] = '§';
+            requestBuffer[requestLen++] = 'U';
+            requestBuffer[requestLen++] = '8';
+            requestBuffer[requestLen++] = linesector;
+            requestBuffer[requestLen++] = device;     // device id
+            requestBuffer[requestLen++] = devtype;    // device type
+            requestBuffer[requestLen++] = 0;   // max position H
+            requestBuffer[requestLen++] = 100;   // max position L
             immediateSend();
             immediateReceive('k');
             delay(100);
@@ -5574,8 +5610,6 @@ if (sm_picprog == PICPROG_FREE)
 
 
 
-
-
   // ===============================================================================================================
 
 
@@ -5619,10 +5653,10 @@ if (sm_picprog == PICPROG_FREE)
           }  
           devx = ixOfDevice(deva);
           devtype = device_BUS_id[devx].deviceType;
-          if ((devtype < 1) || (devtype > 32))
-            devtype = 1;
         }
         
+        if ((devtype < 1) || (devtype > 32))
+            devtype = 1;
         if ((devtype == 1) || (devtype == 11))     // luce e gen non vanno considerato pari/dispari...
         {
           deva.address = replyBuffer[4];      // ripristina indirizzo originale
@@ -5635,7 +5669,7 @@ if (sm_picprog == PICPROG_FREE)
           char nomeDevice[6];
           sprintf(nomeDevice, "%02X%02X", deva.linesector, deva.address);  // to
         // ----------------------------------------- STATO SWITCH --------------------------------------------
-          if (devtype == 1)
+          if (devtype == 1) 
           {
             if (action == 0x81)
             {
@@ -5650,7 +5684,43 @@ if (sm_picprog == PICPROG_FREE)
           }
           else
         // ----------------------------------------- STATO DIMMER --------------------------------------------
-          if (devtype == 4)
+          if ((devtype == 4) || (devtype == 24))
+          {
+            if (baseOk)    
+            {
+              if (action == 0x81)
+              {
+                 payload = "ON";
+              }
+              else if (action == 0x80)
+              {
+                payload = "OFF";
+              }
+            }
+            else   //      // up down
+            {
+              if (action == 0x89)
+              {
+                  payload = "-UP START";
+              }
+              else if (action == 0x88)
+              {
+                  payload = "-UP STOP";
+              }
+              else if (action == 0x80)
+              {
+                  payload = "-DOWN STOP";
+              }
+              else if (action == 0x81)
+              {
+                  payload = "-DOWN START";
+              }
+            }
+            topic = SWITCH_STATE;
+            topic += nomeDevice;
+          }  // devtype = 4
+        /*
+          if (devtype == 24)
           {
             char actionc[4];
             sprintf(actionc, "%02u", action);
@@ -5658,9 +5728,11 @@ if (sm_picprog == PICPROG_FREE)
             topic = BRIGHT_STATE;
             topic += nomeDevice;
           }
+          */
           else
         // ----------------------------------------- STATO COVER --------------------------------------------
-          if ((devtype == 8) || (devtype == 18))
+          if ((devtype == 8) || (devtype == 18)
+          ||  (devtype == 9) || (devtype == 19))
           {
             if (baseOk)    // stop
             {
@@ -5730,7 +5802,8 @@ if (sm_picprog == PICPROG_FREE)
           {
               const char* cTopic = topic.c_str();
               const char* cPayload = payload.c_str();
-              client.publish(cTopic, cPayload, mqtt_persistence);
+              if ((cPayload[0] != '-') || (tcpuart == 2))
+                  client.publish(cTopic, cPayload, mqtt_persistence);
           }
         }       // default switch
 
