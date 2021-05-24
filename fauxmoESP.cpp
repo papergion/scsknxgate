@@ -30,6 +30,10 @@
 #include "fauxmoESP.h"
 unsigned char iDevice = 0;
 unsigned char iDiscovered = 0;
+unsigned int  iqueryed = 0;
+String macaddress;
+String macshort;
+
 
 // -----------------------------------------------------------------------------
 // UDP
@@ -40,9 +44,6 @@ void fauxmoESP::_sendUDPResponse() {
   DEBUG_MSG_FAUXMO("[FAUXMO] Responding to M-SEARCH request\r\n");
 
   IPAddress ip = WiFi.localIP();
-  String mac = WiFi.macAddress();
-  mac.replace(":", "");
-  mac.toLowerCase();
 
   char response[strlen(FAUXMO_UDP_RESPONSE_TEMPLATE) + 128];
   snprintf_P(
@@ -50,7 +51,7 @@ void fauxmoESP::_sendUDPResponse() {
     FAUXMO_UDP_RESPONSE_TEMPLATE,
     ip[0], ip[1], ip[2], ip[3],
     _tcp_port,
-    mac.c_str(), mac.c_str()
+    macaddress.c_str(), macaddress.c_str()
   );
 
 #if DEBUG_FAUXMO_VERBOSE_UDP
@@ -81,10 +82,16 @@ void fauxmoESP::_handleUDP() {
 #endif
 
     String request = (const char *) data;
-    if (request.indexOf("M-SEARCH") >= 0) {
-      if (request.indexOf("upnp:rootdevice") > 0 || request.indexOf("device:basic:1") > 0) {
-        _sendUDPResponse();
-      }
+    if (request.indexOf("M-SEARCH") >= 0) 
+    {
+        if (request.indexOf("Windows") > 0)
+        {
+        }
+        else
+        if (request.indexOf("upnp:rootdevice") > 0 || request.indexOf("device:basic:1") > 0 || request.indexOf("ssdp:discover") > 0) 
+	    {
+          _sendUDPResponse();
+        }
     }
   }
 
@@ -117,23 +124,16 @@ String fauxmoESP::_deviceJson_first(unsigned char id) {
 
   if (id >= _devices.size()) return "{}";
 
-  String mac = WiFi.macAddress();
-  mac.replace(":", "");
-  mac.toLowerCase();
-#ifdef SHORT_MACADDRESS
-  String mac1 = mac.substring(9);
-#endif
-
   fauxmoesp_device_t device = _devices[id];
   char buffer[strlen_P(FAUXMO_DEVICE_JSON_TEMPLATE_FIRST) + 64];
   snprintf_P(
     buffer, sizeof(buffer),
     FAUXMO_DEVICE_JSON_TEMPLATE_FIRST,
 #ifdef UNIQUE_MACADDRESS
-    device.name, mac.c_str(), id + 1
+    device.name, macaddress.c_str(), id + 1
 #endif
 #ifdef SHORT_MACADDRESS
-    device.name, mac1.c_str(), id + 1
+    device.name, macshort.c_str(), id + 1
 #endif
 #ifdef UNIQUE_MY
     device.name, id + 1
@@ -149,29 +149,16 @@ String fauxmoESP::_deviceJson(unsigned char id) {
 
   if (id >= _devices.size()) return "{}";
 
-#ifdef UNIQUE_MACADDRESS
-  String mac = WiFi.macAddress();
-  mac.replace(":", "");
-  mac.toLowerCase();
-#endif
-
-#ifdef SHORT_MACADDRESS
-  String mac = WiFi.macAddress();
-  mac.replace(":", "");
-  mac.toLowerCase();
-  String mac1 = mac.substring(9);
-#endif
-
   fauxmoesp_device_t device = _devices[id];
   char buffer[strlen_P(FAUXMO_DEVICE_JSON_TEMPLATE) + 64];
   snprintf_P(
     buffer, sizeof(buffer),
     FAUXMO_DEVICE_JSON_TEMPLATE,
 #ifdef UNIQUE_MACADDRESS
-    device.name, mac.c_str(), id + 1,
+    device.name, macaddress.c_str(), id + 1,
 #endif
 #ifdef SHORT_MACADDRESS
-    device.name, mac1.c_str(), id + 1,
+    device.name, macshort.c_str(), id + 1,
 #endif
 #ifdef UNIQUE_MY
     device.name, id + 1,
@@ -188,12 +175,9 @@ bool fauxmoESP::_onTCPDescription(AsyncClient *client, String url, String body) 
   (void) url;
   (void) body;
 
-  DEBUG_MSG_FAUXMO("[FAUXMO] Handling /description.xml request\r\n");
-
   IPAddress ip = WiFi.localIP();
-  String mac = WiFi.macAddress();
-  mac.replace(":", "");
-  mac.toLowerCase();
+
+  DEBUG_MSG_FAUXMO("[FAUXMO] Handling /description.xml request\r\n");
 
   char response[strlen_P(FAUXMO_DESCRIPTION_TEMPLATE) + 64];
   snprintf_P(
@@ -201,7 +185,7 @@ bool fauxmoESP::_onTCPDescription(AsyncClient *client, String url, String body) 
     FAUXMO_DESCRIPTION_TEMPLATE,
     ip[0], ip[1], ip[2], ip[3], _tcp_port,
     ip[0], ip[1], ip[2], ip[3], _tcp_port,
-    mac.c_str(), mac.c_str()
+    macaddress.c_str(), macaddress.c_str()
   );
 
   _sendTCPResponse(client, "200 OK", response, "text/xml");
@@ -234,8 +218,8 @@ bool fauxmoESP::_onTCPList(AsyncClient *client, String url, String body) {
     if (iDevice < _devices.size())
     {
       response += "{";
-      while ((response.length() < 928) && (iDevice < _devices.size()))
-//    while ((response.length() < 1500-(strlen_P(FAUXMO_DEVICE_JSON_TEMPLATE) + 64))  && (iDevice < _devices.size()));
+//      while ((response.length() < HUE_TCP_PACKETSIZE) && (iDevice < _devices.size()))
+      while ((response.length() < HUE_TCP_PACKETSIZE) && (iDevice < _devices.size()))
       {
         if (first++ > 0) response += ",";
 #ifdef SHORT_DECLARE
@@ -256,6 +240,7 @@ bool fauxmoESP::_onTCPList(AsyncClient *client, String url, String body) {
   } else {
 
     response = _deviceJson(id - 1);
+    iqueryed++;
 
 #ifdef MY_DEBUG_FAUXMO         
     //    Serial.print("[FAUXMO] Handling single device\r\n");
@@ -282,6 +267,10 @@ bool fauxmoESP::_onTCPList(AsyncClient *client, String url, String body) {
 unsigned char fauxmoESP::discovered(void)
 {
   return iDiscovered;
+}
+unsigned int fauxmoESP::queryed(void)
+{
+  return iqueryed;
 }
 
 unsigned char fauxmoESP::devices(void)
@@ -648,7 +637,13 @@ void fauxmoESP::handle() {
   if (_enabled) _handleUDP();
 }
 
+
 void fauxmoESP::enable(bool enable) {
+
+  macaddress = WiFi.macAddress();	//01:34:67:90:23:56
+  macaddress.toLowerCase();
+  macshort = macaddress.substring(9);
+  macaddress.replace(":", "");
 
   if (enable == _enabled) return;
   _enabled = enable;

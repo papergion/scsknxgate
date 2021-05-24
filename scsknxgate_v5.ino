@@ -1,11 +1,11 @@
 //----------------------------------------------------------------------------------
 #define _FW_NAME     "SCSKNXGATE"
-#define _FW_VERSION  "VER_5.0639 "
+#define _FW_VERSION  "VER_5.0640 "
 #define _ESP_CORE    "esp8266-2.5.2"
 
 #define NO_JUMPER        // usare con ESP-M3  (esp8285) - cambiare anche setup IDE
-#define KNX
-//#define SCS
+//#define KNX
+#define SCS
 //#define DEBUG
 
 //----------------------------------------------------------------------------------
@@ -39,6 +39,7 @@
 
 //  adeguare pagina test a scs
   
+// 5.0640 nuova versione routines fauxmo
 // 5.0637 correzione dimmer knx x opzione 3
 // 5.0634 aggiunta callback con ip fisso, usando resp=W
 // 5.0633 scs - riconoscimento temperature termostati (tipo 15)

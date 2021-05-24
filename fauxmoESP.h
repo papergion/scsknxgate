@@ -33,9 +33,11 @@ THE SOFTWARE.
 #define FAUXMO_TCP_MAX_CLIENTS      10
 #define FAUXMO_TCP_PORT             80
 #define FAUXMO_RX_TIMEOUT           3
+//#define HUE_TCP_PACKETSIZE         870 // 536x2=1072-92(json) -> 972 - 90(header) -> 880
+#define HUE_TCP_PACKETSIZE        2048 // 1460x2=2920-200=2720
 
+//#define DEBUG_FAUXMO_TCP         
 
-#define DEBUG_FAUXMO_TCP         
 //#define MY_DEBUG_FAUXMO         
 //#define DEBUG_FAUXMO                Serial
 //#define DEBUG_FAUXMO_VERBOSE_TCP    true
@@ -115,6 +117,7 @@ class fauxmoESP {
         void setPort(unsigned long tcp_port) { _tcp_port = tcp_port; }
         void handle();
         unsigned char discovered(void); 
+        unsigned int queryed(void); 
         unsigned char devices(void); 
 
     private:
