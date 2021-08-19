@@ -1,12 +1,15 @@
 //----------------------------------------------------------------------------------
 #define _FW_NAME     "SCSKNXGATE"
-#define _FW_VERSION  "VER_5.0640 "
+#define _FW_VERSION  "VER_5.0641 "
 #define _ESP_CORE    "esp8266-2.5.2"
 
 #define NO_JUMPER        // usare con ESP-M3  (esp8285) - cambiare anche setup IDE
-//#define KNX
+//#define KNX   --> per KNX il modulo piu' evoluto e'  V6
 #define SCS
 //#define DEBUG
+//                              ========================================================
+//#define TCP_MSS       1024 // compilare con OPZIONE lwip variant: V2 higher bandwidth
+//                              ========================================================
 
 //----------------------------------------------------------------------------------
 //        ---- attenzione - porta http: 8080 <--se alexaParam=y--------------
@@ -4862,7 +4865,7 @@ if (sm_picprog == PICPROG_FREE)
     manualInput(prefix);
     prefix = 0;
 #endif
-    if ((prefix > 0xF0) && (prefix < 0xF9)) // 0xf5 y aa bb cc dd
+    if ((prefix > 0xF0) && (prefix < 0xFF)) // 0xf5 y aa bb cc dd 
     {
       internal = 1;
       lmax = (prefix & 0x0F);
@@ -5290,7 +5293,7 @@ if (sm_picprog == PICPROG_FREE)
   // --------SCS-----4abcd-(from-to-type-cmd)------- PUBBLICAZIONE STATO DEVICES -------------------------------------------------------
   // --------KNX-----4abcd-(from-to-cmd)------------ PUBBLICAZIONE STATO DEVICES -------------------------------------------------------
 
-  if ((mqttopen == 3) && (replyBuffer[1] == 'y') && ((replyBuffer[0] == 0xF5) || (replyBuffer[0] == 0xF6)))   
+  if ((mqttopen == 3) && (replyBuffer[1] == 'y') && ((replyBuffer[0] == 0xF5) || (replyBuffer[0] == 0xF6)))
   { // START pubblicazione stato device        [0xF5] [y] 32 00 12 01
     char devtype;
     char action;
@@ -5616,7 +5619,13 @@ if (sm_picprog == PICPROG_FREE)
 
   // ================================ C O M A N D I     K N X  ===========================================
 #ifdef KNX
-  // KNX intero  [9] B4 10 29 0B 65 E1 00 81 7C
+  // [9] B4 10 29 0B 65 E1 00 81 7C
+  //     B4 10 ss dd dd E1 00 cc kk	   	                     -> F6  
+  //     B4 10 91 0F 01 E2 00 80 01 A7                       -> F7
+  //     B4 11 06 0C 7A E5 00 80 10 B1 80 6F 01              -> FA
+  //     B0 11 0E 11 AA 69 03 D6 01 C9 40 09 25 2E 01 0E D2  -> FE
+  //
+  
   // knx ridotto  [0xF5] [y] 29 0B 65 81
   // knx ridotto  [0xF6] [y] 01 0F 01 81 01
 
