@@ -63,15 +63,18 @@ PROGMEM const char FAUXMO_DEVICE_JSON_TEMPLATE_FIRST[] = "{"
     "\"uniqueid\":\""
 #ifdef UNIQUE_MACADDRESS
     "%s"
+    "-%d\","
 #endif
 #ifdef SHORT_MACADDRESS
-    "%s"
+	"00:17:88:"
+	"%s:"
+	"%02x:e9-0b\","         // +30
 #endif
 #ifdef UNIQUE_MY
     UNIQUE_MY
+    "%02x:e9-0b\","
 #endif
-    "-%d\","
-	"\"capabilities\":{}"
+	"\"capabilities\":{}"   // 18
 "}";
 
 // json per stato di dettaglio del dispositivo
@@ -81,14 +84,17 @@ PROGMEM const char FAUXMO_DEVICE_JSON_TEMPLATE[] = "{"
     "\"uniqueid\":\""
 #ifdef UNIQUE_MACADDRESS
     "%s"
+    "-%d\","
 #endif
 #ifdef SHORT_MACADDRESS
-    "%s"
+	"00:17:88:"
+	"%s:"
+	"%02x:e9-0b\","
 #endif
 #ifdef UNIQUE_MY
     UNIQUE_MY
+    "%02x:e9-0b\","
 #endif
-    "-%d\","
     "\"modelid\":\"LCT007\","
     "\"state\":{"
         "\"on\":%s,\"bri\":%d,\"xy\":[0,0],\"reachable\": true"
