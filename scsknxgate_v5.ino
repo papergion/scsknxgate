@@ -1,6 +1,6 @@
 //----------------------------------------------------------------------------------
 #define _FW_NAME     "SCSKNXGATE"
-#define _FW_VERSION  "VER_5.0642 "
+#define _FW_VERSION  "VER_5.0643 "
 #define _ESP_CORE    "esp8266-2.5.2"
 
 #define NO_JUMPER        // usare con ESP-M3  (esp8285) - cambiare anche setup IDE
@@ -42,6 +42,7 @@
 
 //  adeguare pagina test a scs
   
+// 5.0643 inclusa pagina di test
 // 5.0640 nuova versione routines fauxmo
 // 5.0637 correzione dimmer knx x opzione 3
 // 5.0634 aggiunta callback con ip fisso, usando resp=W
@@ -1617,9 +1618,9 @@ void handleRoot()
 // =============================================================================================
 void handleTest()
 {
-#ifdef KNX
+//#ifdef KNX
   newTest();
-#endif
+//#endif
 
   server.send(200, "text/html", content);
   content = "";
